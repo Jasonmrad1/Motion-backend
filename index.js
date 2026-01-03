@@ -130,6 +130,10 @@ app.post('/send-message', async (req, res) => {
     }
 
     console.log('✅ Message sent successfully:', message.id);
+    
+    // Send notification to recipient
+    await sendNotificationToRecipient(convo, senderId, role, content);
+    
     return res.status(201).json({
       success: true,
       message: 'Message sent successfully',
@@ -145,6 +149,48 @@ app.post('/send-message', async (req, res) => {
     });
   }
 });
+
+// Send notification to recipient
+async function sendNotificationToRecipient(conversation, senderId, senderRole, messageContent) {
+  try {
+    // Determine recipient
+    const recipientId = senderRole === 'user' ? conversation.coach_id : conversation.user_id;
+    
+    // Get sender's name from Firebase
+    const senderRecord = await admin.auth().getUser(senderId);
+    const senderEmail = senderRecord.email || 'Unknown';
+    const senderName = senderRecord.displayName || senderEmail.split('@')[0];
+
+    // Get recipient's custom claims (FCM topics they're subscribed to)
+    const recipientRecord = await admin.auth().getUser(recipientId);
+    const recipientEmail = recipientRecord.email || 'Unknown';
+
+    console.log(`📱 Sending notification to ${recipientEmail} from ${senderName}`);
+
+    // Send multicast notification using topic
+    const recipientTopic = `user_${recipientId}`;
+    
+    const message = {
+      notification: {
+        title: senderName,
+        body: messageContent.substring(0, 100),
+      },
+      data: {
+        conversation_id: conversation.id,
+        sender_id: senderId,
+        sender_role: senderRole,
+      },
+      topic: recipientTopic,
+    };
+
+    const response = await admin.messaging().send(message);
+    console.log('✅ Notification sent:', response);
+
+  } catch (error) {
+    console.error('⚠️ Warning: Failed to send notification:', error.message);
+    // Don't fail the message send if notification fails
+  }
+}
 
 // Health check endpoint
 app.get('/health', (req, res) => {
