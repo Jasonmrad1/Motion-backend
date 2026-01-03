@@ -1,0 +1,9 @@
+# Secrets
+.env
+
+# Dependencies
+node_modules/
+
+# Local / optional
+SETUP_TEST_DATA.sql
+index.js.updated
