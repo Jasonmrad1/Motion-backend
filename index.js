@@ -142,21 +142,27 @@ app.post('/send-message', async (req, res) => {
       try {
         // Generate AI response using Gemini (pass userId for routine saving)
         const botResponseData = await generateBotResponse(content, senderId);
-        
+        let savedRoutine = null;
+        let routineSaved = false;
+
         // If routine was generated, save it to Supabase
         if (botResponseData.routine) {
-          const { error: routineError } = await supabase
+          const { data: routineData, error: routineError } = await supabase
             .from('routines')
             .insert({
               user_uuid: senderId,
               title: botResponseData.routine.title || botResponseData.routine.routine_name,
               exercises: botResponseData.routine.exercises,
-            });
+            })
+            .select()
+            .single();
 
           if (routineError) {
             console.error('⚠️ Failed to save routine:', routineError);
           } else {
             console.log('✅ Routine saved to Supabase');
+            savedRoutine = routineData;
+            routineSaved = true;
           }
         }
         
@@ -179,7 +185,9 @@ app.post('/send-message', async (req, res) => {
             success: true,
             message: 'Message sent successfully',
             data: userMessage,
-            botResponseFailed: true
+            botResponseFailed: true,
+            botRoutine: savedRoutine,
+            routineSaved: routineSaved,
           });
         }
 
@@ -189,7 +197,9 @@ app.post('/send-message', async (req, res) => {
           success: true,
           message: 'Message sent and AI response generated',
           data: userMessage,
-          botResponse: botMessage
+          botResponse: botMessage,
+          botRoutine: savedRoutine,
+          routineSaved: routineSaved,
         });
       } catch (botError) {
         console.error('⚠️ Bot response generation failed:', botError);
