@@ -148,9 +148,8 @@ app.post('/send-message', async (req, res) => {
           const { error: routineError } = await supabase
             .from('routines')
             .insert({
-              user_id: senderId,
-              routine_name: botResponseData.routine.routine_name,
-              description: botResponseData.routine.description || '',
+              user_uuid: senderId,
+              title: botResponseData.routine.title || botResponseData.routine.routine_name,
               exercises: botResponseData.routine.exercises,
             });
 
@@ -239,8 +238,9 @@ async function generateBotResponse(userMessage, userId) {
       // Generate routine and save to Supabase
       console.log('📋 Routine request detected, generating routine...');
       const routine = await generateAndSaveRoutine(userMessage, userId);
+      const routineTitle = routine.title || routine.routine_name || 'new routine';
       return {
-        message: `I've created a personalized workout routine for you! Check your **Routines** section to view and track it. 💪`,
+        message: `I've created a personalized workout routine called "${routineTitle}". Check your Routines section to view and track it. 💪`,
         routine: routine
       };
     } else {
@@ -303,8 +303,7 @@ async function generateAndSaveRoutine(userMessage, userId) {
     
 Generate a JSON fitness routine with this exact structure:
 {
-  "routine_name": "string (e.g., 'Beginner Full Body')",
-  "description": "string (brief description)",
+  "title": "string (e.g., 'Beginner Full Body')",
   "exercises": [
     {
       "name": "string",
@@ -359,9 +358,12 @@ Return ONLY valid JSON, no extra text.`;
     // Parse the JSON response
     const routineData = JSON.parse(routineJson);
 
-    console.log('✅ Routine generated:', routineData.routine_name);
+    console.log('✅ Routine generated:', routineData.title || routineData.routine_name);
     
-    return routineData;
+    return {
+      ...routineData,
+      title: routineData.title || routineData.routine_name,
+    };
 
   } catch (error) {
     console.error('❌ Error generating routine:', error);
