@@ -341,11 +341,20 @@ Return ONLY valid JSON, no extra text.`;
     }
 
     const data = await response.json();
-    const routineJson = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+    let routineJson = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
 
     if (!routineJson) {
       throw new Error('Empty response from Gemini for routine');
     }
+
+    // Strip markdown code blocks if present (Gemini sometimes wraps in ```json ... ```)
+    if (routineJson.startsWith('```json')) {
+      routineJson = routineJson.replace(/^```json\n?/, '').replace(/\n?```$/, '');
+    } else if (routineJson.startsWith('```')) {
+      routineJson = routineJson.replace(/^```\n?/, '').replace(/\n?```$/, '');
+    }
+
+    routineJson = routineJson.trim();
 
     // Parse the JSON response
     const routineData = JSON.parse(routineJson);
