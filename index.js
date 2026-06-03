@@ -424,7 +424,7 @@ app.post('/get-bot-conversation', async (req, res) => {
           setTimeout(() => reject(new Error('Supabase query timeout')), 5000)
         )
       ]);
-      existingConvo = result;
+      existingConvo = result.data; // Extract data from Supabase response
     } catch (queryError) {
       console.warn('⚠️ [GET_BOT_CONVERSATION] Query timeout, will create new:', queryError.message);
       existingConvo = null;
@@ -463,7 +463,7 @@ app.post('/get-bot-conversation', async (req, res) => {
           setTimeout(() => reject(new Error('Supabase insert timeout')), 5000)
         )
       ]);
-      newConvo = result;
+      newConvo = result.data; // Extract data from Supabase response
     } catch (insertError) {
       console.error('❌ [GET_BOT_CONVERSATION] Failed to create bot conversation:', insertError.message);
       return res.status(500).json({
