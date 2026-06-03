@@ -140,17 +140,35 @@ app.post('/send-message', async (req, res) => {
       console.log('🤖 Bot conversation detected, generating AI response...');
       
       try {
-        // Generate AI response using Groq
-        const botResponse = await generateBotResponse(content);
+        // Generate AI response using Gemini (pass userId for routine saving)
+        const botResponseData = await generateBotResponse(content, senderId);
         
-        // Insert bot response into Supabase
+        // If routine was generated, save it to Supabase
+        if (botResponseData.routine) {
+          const { error: routineError } = await supabase
+            .from('routines')
+            .insert({
+              user_id: senderId,
+              routine_name: botResponseData.routine.routine_name,
+              description: botResponseData.routine.description || '',
+              exercises: botResponseData.routine.exercises,
+            });
+
+          if (routineError) {
+            console.error('⚠️ Failed to save routine:', routineError);
+          } else {
+            console.log('✅ Routine saved to Supabase');
+          }
+        }
+        
+        // Insert bot response message into Supabase (use friendly message)
         const { data: botMessage, error: botInsertError } = await supabase
           .from('messages')
           .insert({
             conversation_id: conversationId,
             sender_id: BOT_USER_ID,
             sender_role: 'coach',
-            content: botResponse,
+            content: botResponseData.message,
           })
           .select()
           .single();
@@ -206,14 +224,98 @@ app.post('/send-message', async (req, res) => {
 });
 
 // Generate AI bot response using Groq
-async function generateBotResponse(userMessage) {
+async function generateBotResponse(userMessage, userId) {
   try {
     const geminiApiKey = process.env.GEMINI_API_KEY;
     if (!geminiApiKey) {
       throw new Error('GEMINI_API_KEY not configured in environment');
     }
 
-    const systemPrompt = 'You are Motion Coach, a professional fitness coach AI assistant. Help users with workout advice, form correction, nutrition tips, and fitness motivation. Keep responses concise and actionable (2-3 sentences max). Stay focused on fitness/health topics only.';
+    // Check if user is asking for a routine/workout generation
+    const routineKeywords = ['routine', 'workout', 'program', 'generate', 'create', 'plan', 'design', 'build'];
+    const isRoutineRequest = routineKeywords.some(keyword => userMessage.toLowerCase().includes(keyword));
+
+    if (isRoutineRequest) {
+      // Generate routine and save to Supabase
+      console.log('📋 Routine request detected, generating routine...');
+      const routine = await generateAndSaveRoutine(userMessage, userId);
+      return {
+        message: `I've created a personalized workout routine for you! Check your **Routines** section to view and track it. 💪`,
+        routine: routine
+      };
+    } else {
+      // Normal chat response
+      const systemPrompt = 'You are Motion Coach, a professional fitness coach AI assistant. Help users with fitness advice, motivation, and general questions. Keep responses concise and friendly (2-3 sentences max). Stay focused on fitness/health topics.';
+
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${geminiApiKey}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          system_instruction: {
+            parts: [{
+              text: systemPrompt
+            }]
+          },
+          contents: [{
+            parts: [{
+              text: userMessage
+            }]
+          }],
+          generationConfig: {
+            maxOutputTokens: 256,
+            temperature: 0.7,
+          }
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(`Gemini API error: ${response.status} - ${JSON.stringify(errorData)}`);
+      }
+
+      const data = await response.json();
+      const botMessage = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+
+      if (!botMessage) {
+        throw new Error('Empty response from Gemini API');
+      }
+
+      console.log('✅ Bot response generated successfully with Gemini');
+      return {
+        message: botMessage,
+        routine: null
+      };
+    }
+
+  } catch (error) {
+    console.error('❌ Error generating bot response:', error);
+    throw error;
+  }
+}
+
+async function generateAndSaveRoutine(userMessage, userId) {
+  try {
+    const geminiApiKey = process.env.GEMINI_API_KEY;
+    
+    const routinePrompt = `Based on this request: "${userMessage}"
+    
+Generate a JSON fitness routine with this exact structure:
+{
+  "routine_name": "string (e.g., 'Beginner Full Body')",
+  "description": "string (brief description)",
+  "exercises": [
+    {
+      "name": "string",
+      "sets": number,
+      "reps": number,
+      "rest_seconds": number
+    }
+  ]
+}
+
+Return ONLY valid JSON, no extra text.`;
 
     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${geminiApiKey}`, {
       method: 'POST',
@@ -221,18 +323,13 @@ async function generateBotResponse(userMessage) {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        system_instruction: {
-          parts: [{
-            text: systemPrompt
-          }]
-        },
         contents: [{
           parts: [{
-            text: userMessage
+            text: routinePrompt
           }]
         }],
         generationConfig: {
-          maxOutputTokens: 256,
+          maxOutputTokens: 1024,
           temperature: 0.7,
         }
       })
@@ -244,17 +341,21 @@ async function generateBotResponse(userMessage) {
     }
 
     const data = await response.json();
-    const botMessage = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+    const routineJson = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
 
-    if (!botMessage) {
-      throw new Error('Empty response from Gemini API');
+    if (!routineJson) {
+      throw new Error('Empty response from Gemini for routine');
     }
 
-    console.log('✅ Bot response generated successfully with Gemini');
-    return botMessage;
+    // Parse the JSON response
+    const routineData = JSON.parse(routineJson);
+
+    console.log('✅ Routine generated:', routineData.routine_name);
+    
+    return routineData;
 
   } catch (error) {
-    console.error('❌ Error generating bot response:', error);
+    console.error('❌ Error generating routine:', error);
     throw error;
   }
 }
