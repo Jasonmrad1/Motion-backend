@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const admin = require('firebase-admin');
+const fetch = require("node-fetch"); // or use axios
 const { createClient } = require('@supabase/supabase-js');
 require('dotenv').config();
 
@@ -22,6 +23,9 @@ const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
+
+// Constants for AI bot
+const BOT_USER_ID = 'ai-bot-fitness-coach';
 
 // Endpoint to send message
 app.post('/send-message', async (req, res) => {
@@ -108,8 +112,8 @@ app.post('/send-message', async (req, res) => {
       });
     }
 
-    // Insert message into Supabase
-    const { data: message, error: insertError } = await supabase
+    // Insert user message into Supabase
+    const { data: userMessage, error: insertError } = await supabase
       .from('messages')
       .insert({
         conversation_id: conversationId,
@@ -129,16 +133,67 @@ app.post('/send-message', async (req, res) => {
       });
     }
 
-    console.log('✅ Message sent successfully:', message.id);
-    
-    // Send notification to recipient
-    await sendNotificationToRecipient(convo, senderId, role, content);
-    
-    return res.status(201).json({
-      success: true,
-      message: 'Message sent successfully',
-      data: message
-    });
+    console.log('✅ User message sent successfully:', userMessage.id);
+
+    // Check if this conversation is with the AI bot
+    if (convo.coach_id === BOT_USER_ID) {
+      console.log('🤖 Bot conversation detected, generating AI response...');
+      
+      try {
+        // Generate AI response using Groq
+        const botResponse = await generateBotResponse(content);
+        
+        // Insert bot response into Supabase
+        const { data: botMessage, error: botInsertError } = await supabase
+          .from('messages')
+          .insert({
+            conversation_id: conversationId,
+            sender_id: BOT_USER_ID,
+            sender_role: 'coach',
+            content: botResponse,
+          })
+          .select()
+          .single();
+
+        if (botInsertError) {
+          console.error('❌ Failed to insert bot response:', botInsertError);
+          // Still return success for user message, bot response just failed
+          return res.status(201).json({
+            success: true,
+            message: 'Message sent successfully',
+            data: userMessage,
+            botResponseFailed: true
+          });
+        }
+
+        console.log('✅ Bot response sent:', botMessage.id);
+        
+        return res.status(201).json({
+          success: true,
+          message: 'Message sent and AI response generated',
+          data: userMessage,
+          botResponse: botMessage
+        });
+      } catch (botError) {
+        console.error('⚠️ Bot response generation failed:', botError);
+        // Return success for user message, indicate bot failed
+        return res.status(201).json({
+          success: true,
+          message: 'Message sent but AI response failed',
+          data: userMessage,
+          botError: botError.message
+        });
+      }
+    } else {
+      // Send notification to human recipient
+      await sendNotificationToRecipient(convo, senderId, role, content);
+      
+      return res.status(201).json({
+        success: true,
+        message: 'Message sent successfully',
+        data: userMessage
+      });
+    }
 
   } catch (error) {
     console.error('❌ Unexpected error:', error);
@@ -150,7 +205,74 @@ app.post('/send-message', async (req, res) => {
   }
 });
 
+// Generate AI bot response using Groq
+async function generateBotResponse(userMessage) {
+  try {
+    const groqApiKey = process.env.GROQ_API_KEY;
+    if (!groqApiKey) {
+      throw new Error('GROQ_API_KEY not configured in environment');
+    }
+
+    const prompt = `You are a professional fitness coach AI assistant named Motion Coach. Your role is to help users with workout advice, form correction, nutrition tips, and fitness motivation.
+
+User message: "${userMessage}"
+
+Guidelines:
+- Be concise but helpful (2-3 sentences max)
+- Use fitness terminology appropriately
+- Provide actionable advice when possible
+- Be encouraging and supportive
+- If unsure, recommend consulting a professional
+- Stay focused on fitness/health topics
+
+Respond naturally without using markdown or special formatting.`;
+
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${groqApiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'mixtral-8x7b-32768', // Fast, capable model
+        messages: [
+          {
+            role: 'system',
+            content: 'You are Motion Coach, a professional fitness coach AI assistant. Keep responses concise and actionable.'
+          },
+          {
+            role: 'user',
+            content: userMessage
+          }
+        ],
+        max_tokens: 256,
+        temperature: 0.7,
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(`Groq API error: ${response.status} - ${JSON.stringify(errorData)}`);
+    }
+
+    const data = await response.json();
+    const botMessage = data.choices?.[0]?.message?.content?.trim();
+
+    if (!botMessage) {
+      throw new Error('Empty response from Groq API');
+    }
+
+    console.log('✅ Bot response generated successfully');
+    return botMessage;
+
+  } catch (error) {
+    console.error('❌ Error generating bot response:', error);
+    throw error;
+  }
+}
+
 // Send notification to recipient
+
 async function sendNotificationToRecipient(conversation, senderId, senderRole, messageContent) {
   try {
     // Determine recipient
@@ -253,6 +375,130 @@ app.post('/create-test-conversation', async (req, res) => {
   }
 });
 
+// Get or create AI bot conversation for the current user
+// Usage: POST /get-bot-conversation
+// No body required, uses Firebase token
+app.post('/get-bot-conversation', async (req, res) => {
+  const startTime = Date.now();
+  
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized',
+        message: 'Missing or invalid authorization token'
+      });
+    }
+
+    console.log('🤖 [GET_BOT_CONVERSATION] Starting...');
+
+    let decoded;
+    try {
+      decoded = await admin.auth().verifyIdToken(token);
+      console.log('✅ [GET_BOT_CONVERSATION] Firebase verified for user:', decoded.uid);
+    } catch (tokenError) {
+      console.error('❌ [GET_BOT_CONVERSATION] Firebase verification failed:', tokenError.message);
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid Token',
+        message: 'Failed to verify Firebase token: ' + tokenError.message
+      });
+    }
+
+    const userId = decoded.uid;
+
+    // Check if bot conversation already exists (with timeout)
+    console.log('🔍 [GET_BOT_CONVERSATION] Checking for existing conversation...');
+    
+    let existingConvo;
+    try {
+      const result = await Promise.race([
+        supabase
+          .from('conversations')
+          .select('*')
+          .eq('user_id', userId)
+          .eq('coach_id', BOT_USER_ID)
+          .maybeSingle(),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Supabase query timeout')), 5000)
+        )
+      ]);
+      existingConvo = result;
+    } catch (queryError) {
+      console.warn('⚠️ [GET_BOT_CONVERSATION] Query timeout, will create new:', queryError.message);
+      existingConvo = null;
+    }
+
+    if (existingConvo) {
+      const elapsed = Date.now() - startTime;
+      console.log(`✅ [GET_BOT_CONVERSATION] Existing bot conversation found: ${existingConvo.id} (${elapsed}ms)`);
+      return res.status(200).json({
+        success: true,
+        message: 'Bot conversation retrieved',
+        data: {
+          conversationId: existingConvo.id,
+          userId: existingConvo.user_id,
+          coachId: existingConvo.coach_id,
+          createdAt: existingConvo.created_at
+        }
+      });
+    }
+
+    // Create new bot conversation
+    console.log('➕ [GET_BOT_CONVERSATION] Creating new bot conversation...');
+    
+    let newConvo;
+    try {
+      const result = await Promise.race([
+        supabase
+          .from('conversations')
+          .insert({
+            user_id: userId,
+            coach_id: BOT_USER_ID,
+          })
+          .select()
+          .single(),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Supabase insert timeout')), 5000)
+        )
+      ]);
+      newConvo = result;
+    } catch (insertError) {
+      console.error('❌ [GET_BOT_CONVERSATION] Failed to create bot conversation:', insertError.message);
+      return res.status(500).json({
+        success: false,
+        error: 'Database Error',
+        message: 'Failed to create bot conversation: ' + insertError.message
+      });
+    }
+
+    const elapsed = Date.now() - startTime;
+    console.log(`✅ [GET_BOT_CONVERSATION] Bot conversation created: ${newConvo.id} (${elapsed}ms)`);
+    
+    return res.status(201).json({
+      success: true,
+      message: 'Bot conversation created',
+      data: {
+        conversationId: newConvo.id,
+        userId: newConvo.user_id,
+        coachId: newConvo.coach_id,
+        createdAt: newConvo.created_at
+      }
+    });
+
+  } catch (error) {
+    const elapsed = Date.now() - startTime;
+    console.error(`❌ [GET_BOT_CONVERSATION] Unexpected error after ${elapsed}ms:`, error);
+    return res.status(500).json({
+      success: false,
+      error: 'Internal Server Error',
+      message: error.message || 'An unexpected error occurred'
+    });
+  }
+});
+
+
 // Test endpoint: List all conversations
 // Usage: GET /list-conversations
 app.get('/list-conversations', async (req, res) => {
@@ -285,6 +531,87 @@ app.get('/list-conversations', async (req, res) => {
     });
   }
 });
+
+app.post('/generate-routine', async (req, res) => {
+  try {
+    const { userId, goal, level, equipment, bodyParts } = req.body;
+
+    if (!userId || !goal || !level) {
+      return res.status(400).json({
+        success: false,
+        message: "userId, goal, and level are required"
+      });
+    }
+
+    // 1. Fetch exercises from Supabase
+    const { data: exercises, error: exError } = await supabase
+      .from("exercises")
+      .select("id,name,bodyPart,equipment,target")
+      .in("bodyPart", bodyParts || ["chest","legs","back"])
+      .in("equipment", equipment || ["bodyweight","dumbbell"])
+      .limit(50);
+
+    if (exError || !exercises?.length) {
+      return res.status(404).json({
+        success: false,
+        message: "No exercises found"
+      });
+    }
+
+    // 2. Format exercise list for AI
+    const exerciseList = exercises.map(e => `ID ${e.id}: ${e.name} (${e.equipment}, ${e.bodyPart})`).join("\n");
+
+    // 3. Prompt for Groq
+    const prompt = `
+You are a professional fitness coach.
+Generate a workout routine for a user with these details:
+Goal: ${goal}
+Level: ${level}
+
+Use ONLY the exercises below.
+Return ONLY valid JSON in this format:
+{
+  "routine_name": string,
+  "exercises": [
+    {"id": number, "sets": number, "reps": number, "rest": number}
+  ]
+}
+
+Exercises list:
+${exerciseList}
+`;
+
+    // 4. Call Groq API
+    const response = await fetch("https://api.groq.com/v1/generate", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.GROQ_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "groq-llm-mini",
+        prompt: prompt,
+        max_tokens: 500
+      })
+    });
+
+    const data = await response.json();
+    const routineJson = data.output_text; // adjust depending on Groq API response
+
+    return res.status(200).json({
+      success: true,
+      data: JSON.parse(routineJson)
+    });
+
+  } catch (err) {
+    console.error("❌ Routine generation error:", err);
+    return res.status(500).json({
+      success: false,
+      message: err.message
+    });
+  }
+});
+
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Server running on http://localhost:${PORT}`));
