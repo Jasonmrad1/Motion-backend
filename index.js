@@ -215,7 +215,7 @@ async function generateBotResponse(userMessage) {
 
     const systemPrompt = 'You are Motion Coach, a professional fitness coach AI assistant. Help users with workout advice, form correction, nutrition tips, and fitness motivation. Keep responses concise and actionable (2-3 sentences max). Stay focused on fitness/health topics only.';
 
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiApiKey}`, {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${geminiApiKey}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
