@@ -208,61 +208,49 @@ app.post('/send-message', async (req, res) => {
 // Generate AI bot response using Groq
 async function generateBotResponse(userMessage) {
   try {
-    const groqApiKey = process.env.GROQ_API_KEY;
-    if (!groqApiKey) {
-      throw new Error('GROQ_API_KEY not configured in environment');
+    const geminiApiKey = process.env.GEMINI_API_KEY;
+    if (!geminiApiKey) {
+      throw new Error('GEMINI_API_KEY not configured in environment');
     }
 
-    const prompt = `You are a professional fitness coach AI assistant named Motion Coach. Your role is to help users with workout advice, form correction, nutrition tips, and fitness motivation.
+    const systemPrompt = 'You are Motion Coach, a professional fitness coach AI assistant. Help users with workout advice, form correction, nutrition tips, and fitness motivation. Keep responses concise and actionable (2-3 sentences max). Stay focused on fitness/health topics only.';
 
-User message: "${userMessage}"
-
-Guidelines:
-- Be concise but helpful (2-3 sentences max)
-- Use fitness terminology appropriately
-- Provide actionable advice when possible
-- Be encouraging and supportive
-- If unsure, recommend consulting a professional
-- Stay focused on fitness/health topics
-
-Respond naturally without using markdown or special formatting.`;
-
-    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiApiKey}`, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${groqApiKey}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        model: 'mixtral-8x7b-32768', // Fast, capable model
-        messages: [
-          {
-            role: 'system',
-            content: 'You are Motion Coach, a professional fitness coach AI assistant. Keep responses concise and actionable.'
-          },
-          {
-            role: 'user',
-            content: userMessage
-          }
-        ],
-        max_tokens: 256,
-        temperature: 0.7,
+        system_instruction: {
+          parts: [{
+            text: systemPrompt
+          }]
+        },
+        contents: [{
+          parts: [{
+            text: userMessage
+          }]
+        }],
+        generationConfig: {
+          maxOutputTokens: 256,
+          temperature: 0.7,
+        }
       })
     });
 
     if (!response.ok) {
       const errorData = await response.json();
-      throw new Error(`Groq API error: ${response.status} - ${JSON.stringify(errorData)}`);
+      throw new Error(`Gemini API error: ${response.status} - ${JSON.stringify(errorData)}`);
     }
 
     const data = await response.json();
-    const botMessage = data.choices?.[0]?.message?.content?.trim();
+    const botMessage = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
 
     if (!botMessage) {
-      throw new Error('Empty response from Groq API');
+      throw new Error('Empty response from Gemini API');
     }
 
-    console.log('✅ Bot response generated successfully');
+    console.log('✅ Bot response generated successfully with Gemini');
     return botMessage;
 
   } catch (error) {
