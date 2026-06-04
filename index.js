@@ -829,26 +829,6 @@ function normalizeBwSetWeight(set, exerciseCardCategory, userBodyweightKg) {
   return originalKg;
 }
 
-function summarizeRoutine(routine) {
-  if (!routine || !Array.isArray(routine.exercises) || routine.exercises.length === 0) {
-    return '';
-  }
-
-  const summaryExercises = routine.exercises.map((exercise) => {
-    const name = exercise.name || `Exercise ${exercise.id || ''}`;
-    const sets = Array.isArray(exercise.sets)
-      ? exercise.sets.map((set) => `${Math.max(0, Math.floor(parseNumberValue(set.reps ?? 0)))} reps @ ${parseNumberValue(set.kg ?? set.weight ?? 0)} kg`).join(', ')
-      : 'sets unavailable';
-    return `- ${name}: ${sets}`;
-  });
-
-  const visibleExercises = summaryExercises.slice(0, 4);
-  const extraCount = summaryExercises.length - visibleExercises.length;
-  const extraText = extraCount > 0 ? `\n- ...and ${extraCount} more exercise(s)` : '';
-
-  return `Routine summary:\n${visibleExercises.join('\n')}${extraText}`;
-}
-
 function extractJsonString(text) {
   if (!text || typeof text !== 'string') return '';
   let trimmed = text.trim();
@@ -1329,9 +1309,8 @@ async function generateBotResponse(userMessage, userId, filters = {}) {
       }
 
       const routineTitle = routine.title || existingRoutine.title || 'Updated Routine';
-      const routineSummary = summarizeRoutine(routine);
       return {
-        message: `I've updated your routine "${routineTitle}" according to your request.\n${routineSummary}\nIf you'd like another change, just ask me to swap an exercise or adjust the load.`,
+        message: `I've updated your routine "${routineTitle}" according to your request. Tap the button below to view it.`,
         routine: routine,
         botRoutine: savedRoutine,
         routineSaved,
@@ -1356,9 +1335,8 @@ async function generateBotResponse(userMessage, userId, filters = {}) {
 
       const routine = await generateAndSaveRoutine(userMessage, userId, enhancedFilters);
       const routineTitle = routine.title || routine.routine_name || 'New Routine';
-      const routineSummary = summarizeRoutine(routine);
       return {
-        message: `I've created a personalized workout routine called "${routineTitle}".\n${routineSummary}\nIf you'd like to edit this routine, just ask me to replace an exercise or change the load.`,
+        message: `I've created a personalized workout routine called "${routineTitle}". Tap the button below to view it.`,
         routine: routine
       };
     }
