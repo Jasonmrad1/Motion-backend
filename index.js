@@ -26,6 +26,200 @@ const supabase = createClient(
 
 // Constants for AI bot
 const BOT_USER_ID = 'ai-bot-fitness-coach';
+const DEFAULT_ALLOWED_EXERCISE_LIMIT = 30;
+
+function normalizeToArray(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value.map((item) => item?.toString().trim()).filter(Boolean);
+  return value.toString().split(',').map((item) => item.trim()).filter(Boolean);
+}
+
+function matchesFilterValue(cellValue, filterValues) {
+  if (!filterValues?.length) return true;
+  if (!cellValue) return false;
+  const normalizedCell = cellValue.toString().toLowerCase();
+  return filterValues.some((filter) => normalizedCell.includes(filter.toString().toLowerCase()));
+}
+
+async function fetchAllowedExercises(filters = {}) {
+  const { muscleGroups = [], equipment = [], difficulty = [], workoutType = [] } = filters;
+  const { data: exercises, error } = await supabase
+    .from('exercises')
+    .select('*')
+    .limit(DEFAULT_ALLOWED_EXERCISE_LIMIT * 2);
+
+  if (error) {
+    throw new Error(`Failed to load allowed exercises: ${error.message || error}`);
+  }
+
+  if (!Array.isArray(exercises) || exercises.length === 0) {
+    return [];
+  }
+
+  return exercises
+    .map((exercise) => ({
+      id: Number(exercise.id),
+      name: (exercise.name || exercise.exercise || '').toString().trim(),
+      bodyPart: exercise.bodyPart || exercise.body_part || exercise.target || 'General',
+      target: exercise.target || '',
+      equipment: exercise.equipment || '',
+      difficulty: exercise.difficulty || '',
+      workoutType: exercise.workout_type || exercise.workoutType || exercise.type || '',
+      secondaryMuscles: Array.isArray(exercise.secondaryMuscles)
+        ? exercise.secondaryMuscles.map((m) => String(m))
+        : exercise.secondaryMuscles != null
+        ? [String(exercise.secondaryMuscles)]
+        : [],
+      gifUrl: exercise.gifUrl || '',
+      exercise_card_category: exercise.exercise_card_category || exercise.exerciseCardCategory || 'NORMAL',
+    }))
+    .filter((exercise) => exercise.id && exercise.name)
+    .filter((exercise) => {
+      if (muscleGroups.length) {
+        const muscleMatch = [exercise.bodyPart, exercise.target]
+          .filter(Boolean)
+          .some((field) => matchesFilterValue(field, muscleGroups));
+        const secondaryMatch = exercise.secondaryMuscles.some((muscle) => matchesFilterValue(muscle, muscleGroups));
+        if (!muscleMatch && !secondaryMatch) return false;
+      }
+      if (equipment.length && !matchesFilterValue(exercise.equipment, equipment)) {
+        return false;
+      }
+      if (difficulty.length && exercise.difficulty) {
+        if (!matchesFilterValue(exercise.difficulty, difficulty)) return false;
+      }
+      if (workoutType.length && exercise.workoutType) {
+        if (!matchesFilterValue(exercise.workoutType, workoutType)) return false;
+      }
+      return true;
+    })
+    .slice(0, DEFAULT_ALLOWED_EXERCISE_LIMIT);
+}
+
+function buildAllowedExercisesPrompt(userMessage, allowedExercises, filters = {}) {
+  const exerciseList = allowedExercises
+    .map((exercise) => `- ID ${exercise.id}: ${exercise.name}`)
+    .join('\n');
+
+  const preferenceFragments = [];
+  if (filters.muscleGroups?.length) preferenceFragments.push(`Muscle groups: ${filters.muscleGroups.join(', ')}`);
+  if (filters.equipment?.length) preferenceFragments.push(`Equipment: ${filters.equipment.join(', ')}`);
+  if (filters.difficulty?.length) preferenceFragments.push(`Difficulty: ${filters.difficulty.join(', ')}`);
+  if (filters.workoutType?.length) preferenceFragments.push(`Workout type: ${filters.workoutType.join(', ')}`);
+
+  const preferenceText = preferenceFragments.length
+    ? `User preferences:\n${preferenceFragments.join('\n')}`
+    : 'No explicit additional preferences were provided.';
+
+  return `Based on this request: "${userMessage}"
+${preferenceText}
+
+Generate a workout routine using ONLY the allowed exercises below.
+Do not invent, rename, or substitute any exercise.
+Return ONLY valid JSON in this exact format:
+{
+  "title": "string",
+  "exercises": [
+    {
+      "exercise_id": number,
+      "notes": ["string"],
+      "sets": [
+        { "kg": number, "reps": number, "rest": number }
+      ]
+    }
+  ]
+}
+
+Allowed exercises:
+${exerciseList}
+
+Rules:
+- Use exercise_id values exactly as listed.
+- Use only allowed exercises.
+- Do not include exercise names, bodyPart, gifUrl, or any fields outside the schema.
+- Do not use rest_seconds.
+- Do not use an integer sets count or reps at the exercise level.
+- Return balanced volume with compounds first, reasonable total volume, and no duplicate movement patterns.
+- Use 4-8 unique exercises.
+- Return valid JSON only, with no extra text or markdown.
+`;
+}
+
+function parseRoutineResponse(routineData, allowedExerciseMap) {
+  if (!routineData || typeof routineData !== 'object') {
+    throw new Error('Invalid routine payload from AI');
+  }
+
+  const title = (routineData.title || routineData.routine_name || 'New Routine').toString();
+  if (!Array.isArray(routineData.exercises)) {
+    throw new Error('Routine response must include an exercises array');
+  }
+
+  const seenIds = new Set();
+  const exercises = routineData.exercises.map((exercise, index) => {
+    if (!exercise || typeof exercise !== 'object') {
+      throw new Error(`Exercise at index ${index} is invalid`);
+    }
+
+    const exerciseId = Number(
+      exercise.exercise_id ?? exercise.exerciseId ?? exercise.id
+    );
+    if (!Number.isInteger(exerciseId)) {
+      throw new Error(`Invalid exercise_id at index ${index}`);
+    }
+
+    if (!allowedExerciseMap.has(exerciseId)) {
+      throw new Error(`Exercise ID ${exerciseId} is not allowed`);
+    }
+
+    if (seenIds.has(exerciseId)) {
+      throw new Error(`Duplicate exercise_id ${exerciseId} is not allowed`);
+    }
+    seenIds.add(exerciseId);
+
+    const sets = Array.isArray(exercise.sets)
+      ? exercise.sets.map((set, setIndex) => {
+          if (!set || typeof set !== 'object') {
+            throw new Error(`Set at index ${setIndex} for exercise ${exerciseId} is invalid`);
+          }
+          return {
+            kg: Number(set.kg ?? set.weight ?? 0) || 0,
+            reps: Number(set.reps ?? 0) || 0,
+            rest: Number(set.rest ?? set.rest_seconds ?? 60) || 60,
+          };
+        })
+      : [];
+
+    if (sets.length === 0) {
+      if (Number.isInteger(exercise.sets) && Number.isInteger(exercise.reps)) {
+        sets.push({
+          kg: Number(exercise.kg ?? exercise.weight ?? 0) || 0,
+          reps: Number(exercise.reps) || 0,
+          rest: Number(exercise.rest ?? exercise.rest_seconds ?? 60) || 60,
+        });
+      }
+    }
+
+    if (sets.length === 0) {
+      throw new Error(`Exercise ${exerciseId} must include at least one set`);
+    }
+
+    const notes = Array.isArray(exercise.notes)
+      ? exercise.notes.map((note) => note?.toString() ?? '')
+      : [];
+
+    return {
+      exerciseId,
+      sets,
+      notes,
+    };
+  });
+
+  return {
+    title,
+    exercises,
+  };
+}
 
 // Endpoint to send message
 app.post('/send-message', async (req, res) => {
@@ -51,7 +245,22 @@ app.post('/send-message', async (req, res) => {
     }
 
     const senderId = decoded.uid;
-    const { conversationId, content, senderRole } = req.body;
+    const {
+      conversationId,
+      content,
+      senderRole,
+      muscleGroups,
+      equipment,
+      difficulty,
+      workoutType,
+    } = req.body;
+
+    const filters = {
+      muscleGroups: normalizeToArray(muscleGroups),
+      equipment: normalizeToArray(equipment),
+      difficulty: normalizeToArray(difficulty),
+      workoutType: normalizeToArray(workoutType),
+    };
 
     // Validate input
     if (!conversationId) {
@@ -141,19 +350,24 @@ app.post('/send-message', async (req, res) => {
       
       try {
         // Generate AI response using Gemini (pass userId for routine saving)
-        const botResponseData = await generateBotResponse(content, senderId);
+        const botResponseData = await generateBotResponse(content, senderId, filters);
+        
         let savedRoutine = null;
         let routineSaved = false;
-
-        // If routine was generated, save it to Supabase
         if (botResponseData.routine) {
+          const routinePayload = {
+            user_uuid: senderId,
+            title: botResponseData.routine.title || botResponseData.routine.routine_name,
+            exercises: botResponseData.routine.exercises,
+          };
+
+          if (botResponseData.routine.difficulty != null) {
+            routinePayload.difficulty = botResponseData.routine.difficulty;
+          }
+
           const { data: routineData, error: routineError } = await supabase
             .from('routines')
-            .insert({
-              user_uuid: senderId,
-              title: botResponseData.routine.title || botResponseData.routine.routine_name,
-              exercises: botResponseData.routine.exercises,
-            })
+            .insert(routinePayload)
             .select()
             .single();
 
@@ -185,9 +399,7 @@ app.post('/send-message', async (req, res) => {
             success: true,
             message: 'Message sent successfully',
             data: userMessage,
-            botResponseFailed: true,
-            botRoutine: savedRoutine,
-            routineSaved: routineSaved,
+            botResponseFailed: true
           });
         }
 
@@ -233,7 +445,7 @@ app.post('/send-message', async (req, res) => {
 });
 
 // Generate AI bot response using Groq
-async function generateBotResponse(userMessage, userId) {
+async function generateBotResponse(userMessage, userId, filters = {}) {
   try {
     const geminiApiKey = process.env.GEMINI_API_KEY;
     if (!geminiApiKey) {
@@ -245,59 +457,58 @@ async function generateBotResponse(userMessage, userId) {
     const isRoutineRequest = routineKeywords.some(keyword => userMessage.toLowerCase().includes(keyword));
 
     if (isRoutineRequest) {
-      // Generate routine and save to Supabase
       console.log('📋 Routine request detected, generating routine...');
-      const routine = await generateAndSaveRoutine(userMessage, userId);
-      const routineTitle = routine.title || routine.routine_name || 'new routine';
+      const routine = await generateAndSaveRoutine(userMessage, userId, filters);
+      const routineTitle = routine.title || routine.routine_name || 'New Routine';
       return {
         message: `I've created a personalized workout routine called "${routineTitle}". Check your Routines section to view and track it. 💪`,
         routine: routine
       };
-    } else {
-      // Normal chat response
-      const systemPrompt = 'You are Motion Coach, a professional fitness coach AI assistant. Help users with fitness advice, motivation, and general questions. Keep responses concise and friendly (2-3 sentences max). Stay focused on fitness/health topics.';
-
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${geminiApiKey}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          system_instruction: {
-            parts: [{
-              text: systemPrompt
-            }]
-          },
-          contents: [{
-            parts: [{
-              text: userMessage
-            }]
-          }],
-          generationConfig: {
-            maxOutputTokens: 256,
-            temperature: 0.7,
-          }
-        })
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(`Gemini API error: ${response.status} - ${JSON.stringify(errorData)}`);
-      }
-
-      const data = await response.json();
-      const botMessage = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-
-      if (!botMessage) {
-        throw new Error('Empty response from Gemini API');
-      }
-
-      console.log('✅ Bot response generated successfully with Gemini');
-      return {
-        message: botMessage,
-        routine: null
-      };
     }
+
+    // Normal chat response
+    const systemPrompt = 'You are Motion Coach, a professional fitness coach AI assistant. Help users with fitness advice, motivation, and general questions. Keep responses concise and friendly (2-3 sentences max). Stay focused on fitness/health topics.';
+
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${geminiApiKey}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        system_instruction: {
+          parts: [{
+            text: systemPrompt
+          }]
+        },
+        contents: [{
+          parts: [{
+            text: userMessage
+          }]
+        }],
+        generationConfig: {
+          maxOutputTokens: 256,
+          temperature: 0.7,
+        }
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(`Gemini API error: ${response.status} - ${JSON.stringify(errorData)}`);
+    }
+
+    const data = await response.json();
+    const botMessage = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+
+    if (!botMessage) {
+      throw new Error('Empty response from Gemini API');
+    }
+
+    console.log('✅ Bot response generated successfully with Gemini');
+    return {
+      message: botMessage,
+      routine: null
+    };
 
   } catch (error) {
     console.error('❌ Error generating bot response:', error);
@@ -305,26 +516,20 @@ async function generateBotResponse(userMessage, userId) {
   }
 }
 
-async function generateAndSaveRoutine(userMessage, userId) {
+async function generateAndSaveRoutine(userMessage, userId, filters = {}) {
   try {
     const geminiApiKey = process.env.GEMINI_API_KEY;
-    
-    const routinePrompt = `Based on this request: "${userMessage}"
-    
-Generate a JSON fitness routine with this exact structure:
-{
-  "title": "string (e.g., 'Beginner Full Body')",
-  "exercises": [
-    {
-      "name": "string",
-      "sets": number,
-      "reps": number,
-      "rest_seconds": number
+    if (!geminiApiKey) {
+      throw new Error('GEMINI_API_KEY not configured in environment');
     }
-  ]
-}
 
-Return ONLY valid JSON, no extra text.`;
+    const allowedExercises = await fetchAllowedExercises(filters);
+    if (!allowedExercises.length) {
+      throw new Error('No allowed exercises available for the requested preferences');
+    }
+
+    const allowedExerciseMap = new Map(allowedExercises.map((exercise) => [exercise.id, exercise]));
+    const prompt = buildAllowedExercisesPrompt(userMessage, allowedExercises, filters);
 
     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${geminiApiKey}`, {
       method: 'POST',
@@ -334,7 +539,7 @@ Return ONLY valid JSON, no extra text.`;
       body: JSON.stringify({
         contents: [{
           parts: [{
-            text: routinePrompt
+            text: prompt
           }]
         }],
         generationConfig: {
@@ -356,7 +561,6 @@ Return ONLY valid JSON, no extra text.`;
       throw new Error('Empty response from Gemini for routine');
     }
 
-    // Strip markdown code blocks if present (Gemini sometimes wraps in ```json ... ```)
     if (routineJson.startsWith('```json')) {
       routineJson = routineJson.replace(/^```json\n?/, '').replace(/\n?```$/, '');
     } else if (routineJson.startsWith('```')) {
@@ -364,16 +568,30 @@ Return ONLY valid JSON, no extra text.`;
     }
 
     routineJson = routineJson.trim();
-
-    // Parse the JSON response
     const routineData = JSON.parse(routineJson);
+    const parsedRoutine = parseRoutineResponse(routineData, allowedExerciseMap);
 
-    console.log('✅ Routine generated:', routineData.title || routineData.routine_name);
-    
-    return {
-      ...routineData,
-      title: routineData.title || routineData.routine_name,
+    const routineExercises = parsedRoutine.exercises.map((exercise) => {
+      const catalog = allowedExerciseMap.get(exercise.exerciseId);
+      return {
+        id: catalog.id,
+        name: catalog.name,
+        notes: exercise.notes,
+        sets: exercise.sets,
+        bodyPart: catalog.bodyPart,
+        secondaryMuscles: catalog.secondaryMuscles,
+        gifUrl: catalog.gifUrl,
+        exercise_card_category: catalog.exercise_card_category,
+      };
+    });
+
+    const normalized = {
+      title: parsedRoutine.title,
+      exercises: routineExercises,
     };
+
+    console.log('✅ Routine generated:', normalized.title);
+    return normalized;
 
   } catch (error) {
     console.error('❌ Error generating routine:', error);
