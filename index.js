@@ -26,7 +26,7 @@ const supabase = createClient(
 
 // Constants for AI bot
 const BOT_USER_ID = 'ai-bot-fitness-coach';
-const DEFAULT_ALLOWED_EXERCISE_LIMIT = 30;
+const DEFAULT_ALLOWED_EXERCISE_LIMIT = 80;
 
 const MUSCLE_GROUP_TO_TARGETS = {
   Back: ['upper back', 'lats', 'levator scapulae', 'serratus anterior', 'spine', 'back'],
@@ -172,7 +172,7 @@ function calculateDifficulty(exercises) {
   return 'Advanced';
 }
 
-async function fetchAllowedExercises(filters = {}) {
+async function fetchCandidateExercises(filters = {}) {
   const { muscleGroups = [], equipment = [], difficulty = [], workoutType = [] } = filters;
   const effectiveMuscleGroups = expandMuscleGroupFilters(muscleGroups);
 
@@ -182,7 +182,7 @@ async function fetchAllowedExercises(filters = {}) {
     .limit(DEFAULT_ALLOWED_EXERCISE_LIMIT * 2);
 
   if (error) {
-    throw new Error(`Failed to load allowed exercises: ${error.message || error}`);
+    throw new Error(`Failed to load exercise candidates: ${error.message || error}`);
   }
 
   if (!Array.isArray(exercises) || exercises.length === 0) {
@@ -238,7 +238,10 @@ async function fetchAllowedExercises(filters = {}) {
 
 function buildAllowedExercisesPrompt(userMessage, allowedExercises, filters = {}) {
   const exerciseList = allowedExercises
-    .map((exercise) => `- ID ${exercise.id}: ${exercise.name}`)
+    .map((exercise) => {
+      const secondary = exercise.secondaryMuscles?.length ? exercise.secondaryMuscles.join(', ') : 'None';
+      return `- ID ${exercise.id}: ${exercise.name} | bodyPart: ${exercise.bodyPart || 'Unknown'} | equipment: ${exercise.equipment || 'None'} | target: ${exercise.target || 'None'} | secondaryMuscles: ${secondary} | difficulty: ${exercise.difficulty || 'Unknown'} | workoutType: ${exercise.workoutType || 'General'}`;
+    })
     .join('\n');
 
   const preferenceFragments = [];
@@ -254,10 +257,12 @@ function buildAllowedExercisesPrompt(userMessage, allowedExercises, filters = {}
   return `Based on this request: "${userMessage}"
 ${preferenceText}
 
-Generate a workout routine using ONLY the allowed exercises below.
-Do not invent, rename, or substitute any exercise.
+You are a professional fitness coach. From the exercise candidate list below, select the best exercises and build a workout routine like a real coach.
+Use only exercises from the candidate list. Do not invent, rename, substitute, or use any exercise that is not present.
 
-Fill in this exact JSON structure and return only valid JSON:
+Design a balanced routine that fits the user's goal and constraints. Use 4-8 unique exercises. Choose the appropriate sets, reps, rest, and notes for each exercise.
+
+Return only valid JSON in this exact format:
 {
   "title": "string",
   "exercises": [
@@ -271,7 +276,7 @@ Fill in this exact JSON structure and return only valid JSON:
   ]
 }
 
-Allowed exercises:
+Exercise candidates:
 ${exerciseList}
 
 Important:
@@ -281,7 +286,6 @@ Important:
 - For bodyweight, assisted, and weighted-bodyweight exercises, do NOT include BW, BW +, BW -, or any display-formatted weight text in the JSON.
 - Do not include any other fields such as name, bodyPart, gifUrl, difficulty, rest_seconds, restSeconds, weight, or workout_type.
 - Do not use exercise-level reps or set counts.
-- Use 4-8 unique exercises.
 - Do not include markdown, comments, or extra text.
 `;
 }
@@ -614,21 +618,106 @@ app.post('/send-message', async (req, res) => {
   }
 });
 
+async function classifyUserIntent(userMessage) {
+  const geminiApiKey = process.env.GEMINI_API_KEY;
+  if (!geminiApiKey) {
+    throw new Error('GEMINI_API_KEY not configured in environment');
+  }
+
+  const prompt = `Classify the user message into ONE of these intents:
+- "WORKOUT_GENERATION"
+- "FITNESS_CHAT"
+
+Also extract any explicit workout preferences found in the message. Return ONLY valid JSON in this exact shape:
+{
+  "intent": "WORKOUT_GENERATION" | "FITNESS_CHAT",
+  "goal": "string",
+  "muscleGroups": ["string"],
+  "equipment": ["string"],
+  "difficulty": "string",
+  "duration": number
+}
+
+If a field cannot be determined, use an empty string, empty array, or 0.
+
+User message:
+"${userMessage}"
+`;
+
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${geminiApiKey}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      system_instruction: {
+        parts: [{
+          text: 'You are an intent classifier for a fitness assistant. Return only valid JSON with no explanation or extra text.'
+        }]
+      },
+      contents: [{
+        parts: [{
+          text: prompt
+        }]
+      }],
+      generationConfig: {
+        maxOutputTokens: 200,
+        temperature: 0.0,
+      }
+    })
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json();
+    throw new Error(`Gemini intent classification error: ${response.status} - ${JSON.stringify(errorData)}`);
+  }
+
+  const data = await response.json();
+  let intentJson = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+  if (!intentJson) {
+    throw new Error('Empty intent classification response from Gemini');
+  }
+
+  if (intentJson.startsWith('```json')) {
+    intentJson = intentJson.replace(/^```json\n?/, '').replace(/\n?```$/, '');
+  } else if (intentJson.startsWith('```')) {
+    intentJson = intentJson.replace(/^```\n?/, '').replace(/\n?```$/, '');
+  }
+
+  intentJson = intentJson.trim();
+  const intentData = JSON.parse(intentJson);
+  const intent = (intentData.intent || '').toString().trim().toUpperCase();
+  if (!['WORKOUT_GENERATION', 'FITNESS_CHAT'].includes(intent)) {
+    throw new Error(`Invalid intent returned from classifier: ${intent}`);
+  }
+
+  return {
+    intent,
+    goal: intentData.goal?.toString().trim() || '',
+    muscleGroups: Array.isArray(intentData.muscleGroups) ? intentData.muscleGroups.map((item) => item?.toString().trim()).filter(Boolean) : [],
+    equipment: Array.isArray(intentData.equipment) ? intentData.equipment.map((item) => item?.toString().trim()).filter(Boolean) : [],
+    difficulty: intentData.difficulty?.toString().trim() || '',
+    duration: Number.isFinite(Number(intentData.duration)) ? Number(intentData.duration) : 0,
+  };
+}
+
 // Generate AI bot response using Groq
 async function generateBotResponse(userMessage, userId, filters = {}) {
   try {
-    const geminiApiKey = process.env.GEMINI_API_KEY;
-    if (!geminiApiKey) {
-      throw new Error('GEMINI_API_KEY not configured in environment');
-    }
+    const intentData = await classifyUserIntent(userMessage);
+    console.log('🔎 Intent detection result:', intentData);
 
-    // Check if user is asking for a routine/workout generation
-    const routineKeywords = ['routine', 'workout', 'program', 'generate', 'create', 'plan', 'design', 'build'];
-    const isRoutineRequest = routineKeywords.some(keyword => userMessage.toLowerCase().includes(keyword));
+    if (intentData.intent === 'WORKOUT_GENERATION') {
+      console.log('📋 Workout intent detected, generating routine...');
 
-    if (isRoutineRequest) {
-      console.log('📋 Routine request detected, generating routine...');
-      const routine = await generateAndSaveRoutine(userMessage, userId, filters);
+      const mergedFilters = {
+        muscleGroups: [...new Set([...(filters.muscleGroups || []), ...intentData.muscleGroups])],
+        equipment: [...new Set([...(filters.equipment || []), ...intentData.equipment])],
+        difficulty: [...new Set([...(filters.difficulty || []), ...(intentData.difficulty ? [intentData.difficulty] : [])])],
+        workoutType: [...new Set([...(filters.workoutType || []), ...(intentData.goal ? [intentData.goal] : [])])],
+      };
+
+      const routine = await generateAndSaveRoutine(userMessage, userId, mergedFilters);
       const routineTitle = routine.title || routine.routine_name || 'New Routine';
       return {
         message: `I've created a personalized workout routine called "${routineTitle}". Check your Routines section to view and track it. 💪`,
@@ -637,6 +726,11 @@ async function generateBotResponse(userMessage, userId, filters = {}) {
     }
 
     // Normal chat response
+    const geminiApiKey = process.env.GEMINI_API_KEY;
+    if (!geminiApiKey) {
+      throw new Error('GEMINI_API_KEY not configured in environment');
+    }
+
     const systemPrompt = 'You are Motion Coach, a professional fitness coach AI assistant. Help users with fitness advice, motivation, and general questions. Keep responses concise and friendly (2-3 sentences max). Stay focused on fitness/health topics.';
 
     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${geminiApiKey}`, {
@@ -693,13 +787,13 @@ async function generateAndSaveRoutine(userMessage, userId, filters = {}) {
       throw new Error('GEMINI_API_KEY not configured in environment');
     }
 
-    const allowedExercises = await fetchAllowedExercises(filters);
-    if (!allowedExercises.length) {
-      throw new Error('No allowed exercises available for the requested preferences');
+    const candidateExercises = await fetchCandidateExercises(filters);
+    if (!candidateExercises.length) {
+      throw new Error('No exercise candidates available for routine generation');
     }
 
-    const allowedExerciseMap = new Map(allowedExercises.map((exercise) => [exercise.id, exercise]));
-    const prompt = buildAllowedExercisesPrompt(userMessage, allowedExercises, filters);
+    const allowedExerciseMap = new Map(candidateExercises.map((exercise) => [exercise.id, exercise]));
+    const prompt = buildAllowedExercisesPrompt(userMessage, candidateExercises, filters);
 
     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${geminiApiKey}`, {
       method: 'POST',
@@ -912,7 +1006,7 @@ app.post('/get-bot-conversation', async (req, res) => {
     // Check if bot conversation already exists (with timeout)
     console.log('🔍 [GET_BOT_CONVERSATION] Checking for existing conversation...');
     
-    let existingConvo;
+    let existingConvo = null;
     try {
       const result = await Promise.race([
         supabase
@@ -925,9 +1019,14 @@ app.post('/get-bot-conversation', async (req, res) => {
           setTimeout(() => reject(new Error('Supabase query timeout')), 5000)
         )
       ]);
-      existingConvo = result.data; // Extract data from Supabase response
+
+      if (result && typeof result === 'object' && 'data' in result) {
+        existingConvo = result.data;
+      } else {
+        console.warn('⚠️ [GET_BOT_CONVERSATION] Unexpected query result, will create new:', result);
+      }
     } catch (queryError) {
-      console.warn('⚠️ [GET_BOT_CONVERSATION] Query timeout, will create new:', queryError.message);
+      console.warn('⚠️ [GET_BOT_CONVERSATION] Query timeout or failure, will create new:', queryError.message);
       existingConvo = null;
     }
 
@@ -949,7 +1048,7 @@ app.post('/get-bot-conversation', async (req, res) => {
     // Create new bot conversation
     console.log('➕ [GET_BOT_CONVERSATION] Creating new bot conversation...');
     
-    let newConvo;
+    let newConvo = null;
     try {
       const result = await Promise.race([
         supabase
@@ -964,7 +1063,12 @@ app.post('/get-bot-conversation', async (req, res) => {
           setTimeout(() => reject(new Error('Supabase insert timeout')), 5000)
         )
       ]);
-      newConvo = result.data; // Extract data from Supabase response
+
+      if (result && typeof result === 'object' && 'data' in result) {
+        newConvo = result.data;
+      } else {
+        throw new Error(`Unexpected insert result: ${JSON.stringify(result)}`);
+      }
     } catch (insertError) {
       console.error('❌ [GET_BOT_CONVERSATION] Failed to create bot conversation:', insertError.message);
       return res.status(500).json({
