@@ -409,7 +409,7 @@ ${preferenceText}
 You are a professional fitness coach. From the exercise candidate list below, select the best exercises and build a workout routine like a real coach.
 Use only exercises from the candidate list. Do not invent, rename, substitute, or use any exercise that is not present.
 
-Design a balanced routine that fits the user's goal and constraints. Use 4-8 unique exercises. Choose the appropriate sets, reps, rest, and notes for each exercise.
+Design a balanced routine that fits the user's goal and constraints. Use 4-8 unique exercises. Choose the appropriate sets, reps, and notes for each exercise.
 
 Return only valid JSON in this exact format:
 {
@@ -419,7 +419,7 @@ Return only valid JSON in this exact format:
       "exercise_id": number,
       "notes": ["string"],
       "sets": [
-        { "kg": number, "reps": number, "rest": number }
+        { "kg": number, "reps": number }
       ]
     }
   ]
@@ -433,7 +433,7 @@ Important:
 - Prefer BW_ASSISTED for assisted calisthenics-style exercises when the user request mentions assistance.
 - Only use the keys shown above.
 - Use only exercise_id, notes, and sets for each exercise.
-- Use only kg, reps, and rest for each set.
+- Use only kg and reps for each set.
 - For bodyweight, assisted, and weighted-bodyweight exercises, do NOT include BW, BW +, BW -, or any display-formatted weight text in the JSON.
 - Do not include any other fields such as name, bodyPart, gifUrl, difficulty, rest_seconds, restSeconds, weight, or workout_type.
 - Do not use exercise-level reps or set counts.
@@ -536,7 +536,7 @@ function parseRoutineResponse(routineData, allowedExerciseMap) {
         throw new Error(`Set at index ${setIndex} for exercise ${exerciseId} is invalid`);
       }
 
-      const allowedSetKeys = new Set(['kg', 'weight', 'reps', 'rest']);
+      const allowedSetKeys = new Set(['kg', 'weight', 'reps']);
       const unexpectedSetKeys = Object.keys(set).filter((key) => !allowedSetKeys.has(key));
       if (unexpectedSetKeys.length) {
         throw new Error(`Set ${setIndex} for exercise ${exerciseId} contains unexpected fields: ${unexpectedSetKeys.join(', ')}`);
@@ -545,12 +545,10 @@ function parseRoutineResponse(routineData, allowedExerciseMap) {
       const rawKg = set.kg ?? set.weight ?? 0;
       const kg = parseNumberValue(rawKg);
       const reps = Math.max(0, Math.floor(parseNumberValue(set.reps ?? 0)));
-      const rest = Math.max(0, Math.floor(parseNumberValue(set.rest ?? 0)));
 
       return {
         kg,
         reps,
-        rest,
       };
     });
 
