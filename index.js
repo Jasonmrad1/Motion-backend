@@ -305,6 +305,33 @@ function parseNumberValue(raw) {
   return Number.isNaN(value) ? 0 : value;
 }
 
+function extractJsonString(text) {
+  if (!text || typeof text !== 'string') return '';
+  let trimmed = text.trim();
+
+  if (trimmed.startsWith('```json')) {
+    trimmed = trimmed.replace(/^```json\n?/, '').replace(/\n?```$/, '').trim();
+  } else if (trimmed.startsWith('```')) {
+    trimmed = trimmed.replace(/^```\n?/, '').replace(/\n?```$/, '').trim();
+  }
+
+  const firstBrace = trimmed.indexOf('{');
+  const lastBrace = trimmed.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+    return trimmed.slice(firstBrace, lastBrace + 1).trim();
+  }
+
+  return trimmed;
+}
+
+function parseJsonResponseText(rawText) {
+  const jsonString = extractJsonString(rawText);
+  if (!jsonString) {
+    throw new Error(`Unable to extract JSON from response: ${rawText}`);
+  }
+  return JSON.parse(jsonString);
+}
+
 function parseRoutineResponse(routineData, allowedExerciseMap) {
   if (!routineData || typeof routineData !== 'object' || Array.isArray(routineData)) {
     throw new Error('Invalid routine payload from AI');
@@ -825,14 +852,43 @@ async function generateAndSaveRoutine(userMessage, userId, filters = {}) {
       throw new Error('Empty response from Gemini for routine');
     }
 
-    if (routineJson.startsWith('```json')) {
-      routineJson = routineJson.replace(/^```json\n?/, '').replace(/\n?```$/, '');
-    } else if (routineJson.startsWith('```')) {
-      routineJson = routineJson.replace(/^```\n?/, '').replace(/\n?```$/, '');
+    let routineData;
+    try {
+      routineData = parseJsonResponseText(routineJson);
+    } catch (parseError) {
+      console.warn('⚠️ First routine parse failed, retrying once. Raw response:', routineJson, parseError.message);
+
+      const retryResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${geminiApiKey}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          contents: [{
+            parts: [{
+              text: `${prompt}\n\nThe previous response was invalid JSON. Reply again with only valid JSON in the same format, and do not include any extra text or markdown.`
+            }]
+          }],
+          generationConfig: {
+            maxOutputTokens: 1024,
+            temperature: 0.0,
+          }
+        })
+      });
+
+      if (!retryResponse.ok) {
+        const retryErrorData = await retryResponse.json();
+        throw new Error(`Gemini retry error: ${retryResponse.status} - ${JSON.stringify(retryErrorData)}`);
+      }
+
+      const retryData = await retryResponse.json();
+      const retryText = retryData.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+      if (!retryText) {
+        throw new Error('Empty retry response from Gemini for routine');
+      }
+      routineData = parseJsonResponseText(retryText);
     }
 
-    routineJson = routineJson.trim();
-    const routineData = JSON.parse(routineJson);
     const parsedRoutine = parseRoutineResponse(routineData, allowedExerciseMap);
 
     const routineExercises = parsedRoutine.exercises.map((exercise) => {
