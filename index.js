@@ -49,6 +49,71 @@ function normalizeToArray(value) {
   return value.toString().split(',').map((item) => item.trim()).filter(Boolean);
 }
 
+function normalizeWorkoutFilters(filters = {}) {
+  const muscleGroups = normalizeToArray(filters.muscleGroups);
+  const equipment = normalizeToArray(filters.equipment);
+  const difficulty = normalizeToArray(filters.difficulty);
+  const workoutType = normalizeToArray(filters.workoutType);
+  const goal = filters.goal?.toString().trim() || '';
+  const userMessage = filters.userMessage?.toString().trim().toLowerCase() || '';
+
+  const categories = new Set();
+  const cardCategories = new Set();
+
+  const addCategory = (value) => {
+    if (!value) return;
+    const normalized = value.toString().trim().toLowerCase();
+    if (normalized.includes('calisthenics')) categories.add('calisthenics');
+    if (normalized.includes('bodyweight')) categories.add('bodyweight');
+    if (normalized.includes('assisted')) categories.add('assisted');
+    if (normalized.includes('mobility')) categories.add('mobility');
+    if (normalized.includes('power')) categories.add('power');
+    if (normalized.includes('strength')) categories.add('strength');
+  };
+
+  const addCardCategory = (value) => {
+    if (!value) return;
+    const normalized = value.toString().trim().toLowerCase();
+    if (normalized.includes('assisted')) cardCategories.add('BW_ASSISTED');
+    if (normalized.includes('weighted')) cardCategories.add('BW_WEIGHTED');
+    if (normalized.includes('timed')) cardCategories.add('BW_TIMED');
+    if (normalized.includes('time')) cardCategories.add('TIMED');
+  };
+
+  equipment.forEach(addCategory);
+  difficulty.forEach(addCategory);
+  workoutType.forEach(addCategory);
+  normalizeToArray(goal).forEach(addCategory);
+  normalizeToArray(userMessage).forEach(addCategory);
+
+  equipment.forEach(addCardCategory);
+  difficulty.forEach(addCardCategory);
+  workoutType.forEach(addCardCategory);
+  normalizeToArray(goal).forEach(addCardCategory);
+  normalizeToArray(userMessage).forEach(addCardCategory);
+
+  if (difficulty.some((value) => value.toLowerCase().includes('assisted'))) {
+    cardCategories.add('BW_ASSISTED');
+  }
+  if (equipment.some((value) => value.toLowerCase().includes('calisthenics'))) {
+    categories.add('calisthenics');
+  }
+  if (userMessage.includes('assisted calisthenics')) {
+    categories.add('calisthenics');
+    cardCategories.add('BW_ASSISTED');
+  }
+
+  return {
+    muscleGroups,
+    equipment,
+    difficulty,
+    workoutType,
+    categories: [...categories],
+    cardCategories: [...cardCategories],
+    avoidCardCategories: ['TIMED', 'BW_TIMED'],
+  };
+}
+
 function expandMuscleGroupFilters(muscleGroups) {
   const expanded = [];
   for (const group of muscleGroups) {
@@ -173,7 +238,15 @@ function calculateDifficulty(exercises) {
 }
 
 async function fetchCandidateExercises(filters = {}) {
-  const { muscleGroups = [], equipment = [], difficulty = [], workoutType = [] } = filters;
+  const {
+    muscleGroups = [],
+    equipment = [],
+    difficulty = [],
+    workoutType = [],
+    categories = [],
+    cardCategories = [],
+    avoidCardCategories = ['TIMED', 'BW_TIMED'],
+  } = filters;
   const effectiveMuscleGroups = expandMuscleGroupFilters(muscleGroups);
 
   const { data: exercises, error } = await supabase
@@ -208,91 +281,115 @@ async function fetchCandidateExercises(filters = {}) {
         equipment: exercise.equipment || '',
         difficulty: exercise.difficulty || '',
         workoutType: exercise.workout_type || exercise.workoutType || exercise.type || '',
+        category: exercise.category || '',
+        cardCategory: exercise.exercise_card_category || exercise.exerciseCardCategory || 'NORMAL',
         secondaryMuscles,
         gifUrl: exercise.gifUrl || '',
-        exercise_card_category: exercise.exercise_card_category || exercise.exerciseCardCategory || 'NORMAL',
       };
     })
     .filter((exercise) => exercise.id && exercise.name);
 
-  const matchesFilters = (exercise, options) => {
-    if (options.enforceMuscleGroups && effectiveMuscleGroups.length) {
+  const matchesCardCategory = (cardCategoryValue) => {
+    if (!cardCategories.length) return true;
+    return cardCategories.some(
+      (filter) => filter.toString().trim().toLowerCase() === cardCategoryValue.toString().trim().toLowerCase(),
+    );
+  };
+
+  const filteredExercises = normalizedExercises.filter((exercise) => {
+    if (avoidCardCategories.length && exercise.cardCategory) {
+      if (avoidCardCategories.some((filter) => exercise.cardCategory.toString().trim().toLowerCase() === filter.toString().trim().toLowerCase())) {
+        return false;
+      }
+    }
+
+    if (effectiveMuscleGroups.length) {
       const muscleMatch = [exercise.bodyPart, exercise.target]
         .filter(Boolean)
         .some((field) => matchesFilterValue(field, effectiveMuscleGroups));
       const secondaryMatch = exercise.secondaryMuscles.some((muscle) => matchesFilterValue(muscle, effectiveMuscleGroups));
       if (!muscleMatch && !secondaryMatch) return false;
     }
-    if (options.enforceEquipment && equipment.length && !matchesFilterValue(exercise.equipment, equipment)) {
+
+    if (categories.length && !matchesFilterValue(exercise.category, categories)) {
       return false;
     }
-    if (options.enforceDifficulty && difficulty.length && exercise.difficulty) {
+
+    if (equipment.length && !matchesFilterValue(exercise.equipment, equipment)) {
+      return false;
+    }
+    if (difficulty.length && exercise.difficulty) {
       if (!matchesFilterValue(exercise.difficulty, difficulty)) return false;
     }
-    if (options.enforceWorkoutType && workoutType.length && exercise.workoutType) {
+    if (workoutType.length && exercise.workoutType) {
       if (!matchesFilterValue(exercise.workoutType, workoutType)) return false;
     }
-    return true;
-  };
-
-  let filteredExercises = normalizedExercises.filter((exercise) =>
-    matchesFilters(exercise, {
-      enforceMuscleGroups: true,
-      enforceEquipment: true,
-      enforceDifficulty: true,
-      enforceWorkoutType: true,
-    }),
-  );
-
-  if (!filteredExercises.length) {
-    console.warn('⚠️ No exercises matched strict filters, relaxing filter rules', { muscleGroups, equipment, difficulty, workoutType });
-
-    if (workoutType.length) {
-      filteredExercises = normalizedExercises.filter((exercise) =>
-        matchesFilters(exercise, {
-          enforceMuscleGroups: true,
-          enforceEquipment: true,
-          enforceDifficulty: true,
-          enforceWorkoutType: false,
-        }),
-      );
+    if (cardCategories.length && !matchesCardCategory(exercise.cardCategory)) {
+      return false;
     }
+
+    return true;
+  });
+
+  if (filteredExercises.length) {
+    return filteredExercises.slice(0, DEFAULT_ALLOWED_EXERCISE_LIMIT);
   }
 
-  if (!filteredExercises.length && difficulty.length) {
-    filteredExercises = normalizedExercises.filter((exercise) =>
-      matchesFilters(exercise, {
-        enforceMuscleGroups: true,
-        enforceEquipment: true,
-        enforceDifficulty: false,
-        enforceWorkoutType: false,
-      }),
-    );
-  }
+  console.warn('⚠️ No exercises matched strict filters, relaxing filter rules', {
+    muscleGroups,
+    equipment,
+    difficulty,
+    workoutType,
+    categories,
+    cardCategories,
+  });
 
-  if (!filteredExercises.length && equipment.length) {
-    filteredExercises = normalizedExercises.filter((exercise) =>
-      matchesFilters(exercise, {
-        enforceMuscleGroups: true,
-        enforceEquipment: false,
-        enforceDifficulty: false,
-        enforceWorkoutType: false,
-      }),
-    );
-  }
+  const relaxedExercises = normalizedExercises.filter((exercise) => {
+    if (avoidCardCategories.length && exercise.cardCategory) {
+      if (avoidCardCategories.some((filter) => exercise.cardCategory.toString().trim().toLowerCase() === filter.toString().trim().toLowerCase())) {
+        return false;
+      }
+    }
 
-  if (!filteredExercises.length && effectiveMuscleGroups.length) {
-    filteredExercises = normalizedExercises;
-  }
+    if (effectiveMuscleGroups.length) {
+      const muscleMatch = [exercise.bodyPart, exercise.target]
+        .filter(Boolean)
+        .some((field) => matchesFilterValue(field, effectiveMuscleGroups));
+      const secondaryMatch = exercise.secondaryMuscles.some((muscle) => matchesFilterValue(muscle, effectiveMuscleGroups));
+      if (!muscleMatch && !secondaryMatch) return false;
+    }
 
-  return filteredExercises.slice(0, DEFAULT_ALLOWED_EXERCISE_LIMIT);
+    if (categories.length && matchesFilterValue(exercise.category, categories)) {
+      return true;
+    }
+
+    if (equipment.length && matchesFilterValue(exercise.equipment, equipment)) {
+      return true;
+    }
+
+    if (difficulty.length && exercise.difficulty && matchesFilterValue(exercise.difficulty, difficulty)) {
+      return true;
+    }
+
+    if (workoutType.length && exercise.workoutType && matchesFilterValue(exercise.workoutType, workoutType)) {
+      return true;
+    }
+
+    if (cardCategories.length && matchesCardCategory(exercise.cardCategory)) {
+      return true;
+    }
+
+    return !categories.length && !equipment.length && !difficulty.length && !workoutType.length && !cardCategories.length;
+  });
+
+  return relaxedExercises.slice(0, DEFAULT_ALLOWED_EXERCISE_LIMIT);
 }
 
 function buildAllowedExercisesPrompt(userMessage, allowedExercises, filters = {}) {
   const exerciseList = allowedExercises
     .map((exercise) => {
       const secondary = exercise.secondaryMuscles?.length ? exercise.secondaryMuscles.join(', ') : 'None';
-      return `- ID ${exercise.id}: ${exercise.name} | bodyPart: ${exercise.bodyPart || 'Unknown'} | equipment: ${exercise.equipment || 'None'} | target: ${exercise.target || 'None'} | secondaryMuscles: ${secondary} | difficulty: ${exercise.difficulty || 'Unknown'} | workoutType: ${exercise.workoutType || 'General'}`;
+      return `- ID ${exercise.id}: ${exercise.name} | bodyPart: ${exercise.bodyPart || 'Unknown'} | equipment: ${exercise.equipment || 'None'} | target: ${exercise.target || 'None'} | secondaryMuscles: ${secondary} | difficulty: ${exercise.difficulty || 'Unknown'} | workoutType: ${exercise.workoutType || 'General'} | category: ${exercise.category || 'General'} | cardCategory: ${exercise.cardCategory || 'NORMAL'}`;
     })
     .join('\n');
 
@@ -332,6 +429,8 @@ Exercise candidates:
 ${exerciseList}
 
 Important:
+- Do not select exercises with category BW_TIMED or TIMED because the app does not currently implement a timer.
+- Prefer BW_ASSISTED for assisted calisthenics-style exercises when the user request mentions assistance.
 - Only use the keys shown above.
 - Use only exercise_id, notes, and sets for each exercise.
 - Use only kg, reps, and rest for each set.
@@ -796,7 +895,13 @@ async function generateBotResponse(userMessage, userId, filters = {}) {
         workoutType: [...new Set([...(filters.workoutType || []), ...(intentData.goal ? [intentData.goal] : [])])],
       };
 
-      const routine = await generateAndSaveRoutine(userMessage, userId, mergedFilters);
+      const enhancedFilters = normalizeWorkoutFilters({
+        ...mergedFilters,
+        goal: intentData.goal,
+        userMessage,
+      });
+
+      const routine = await generateAndSaveRoutine(userMessage, userId, enhancedFilters);
       const routineTitle = routine.title || routine.routine_name || 'New Routine';
       return {
         message: `I've created a personalized workout routine called "${routineTitle}". Check your Routines section to view and track it. 💪`,
