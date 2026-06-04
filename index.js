@@ -116,7 +116,8 @@ ${preferenceText}
 
 Generate a workout routine using ONLY the allowed exercises below.
 Do not invent, rename, or substitute any exercise.
-Return ONLY valid JSON in this exact format:
+
+Fill in this exact JSON structure and return only valid JSON:
 {
   "title": "string",
   "exercises": [
@@ -133,21 +134,26 @@ Return ONLY valid JSON in this exact format:
 Allowed exercises:
 ${exerciseList}
 
-Rules:
-- Use exercise_id values exactly as listed.
-- Use only allowed exercises.
-- Do not include exercise names, bodyPart, gifUrl, or any fields outside the schema.
-- Do not use rest_seconds.
-- Do not use an integer sets count or reps at the exercise level.
-- Return balanced volume with compounds first, reasonable total volume, and no duplicate movement patterns.
+Important:
+- Only use the keys shown above.
+- Use only exercise_id, notes, and sets for each exercise.
+- Use only kg, reps, and rest for each set.
+- Do not include any other fields such as name, bodyPart, gifUrl, difficulty, rest_seconds, restSeconds, weight, or workout_type.
+- Do not use exercise-level reps or set counts.
 - Use 4-8 unique exercises.
-- Return valid JSON only, with no extra text or markdown.
+- Do not include markdown, comments, or extra text.
 `;
 }
 
 function parseRoutineResponse(routineData, allowedExerciseMap) {
-  if (!routineData || typeof routineData !== 'object') {
+  if (!routineData || typeof routineData !== 'object' || Array.isArray(routineData)) {
     throw new Error('Invalid routine payload from AI');
+  }
+
+  const allowedRoutineKeys = new Set(['title', 'routine_name', 'exercises']);
+  const extraRoutineKeys = Object.keys(routineData).filter((key) => !allowedRoutineKeys.has(key));
+  if (extraRoutineKeys.length) {
+    throw new Error(`Routine response contains unexpected top-level fields: ${extraRoutineKeys.join(', ')}`);
   }
 
   const title = (routineData.title || routineData.routine_name || 'New Routine').toString();
@@ -157,7 +163,7 @@ function parseRoutineResponse(routineData, allowedExerciseMap) {
 
   const seenIds = new Set();
   const exercises = routineData.exercises.map((exercise, index) => {
-    if (!exercise || typeof exercise !== 'object') {
+    if (!exercise || typeof exercise !== 'object' || Array.isArray(exercise)) {
       throw new Error(`Exercise at index ${index} is invalid`);
     }
 
@@ -177,28 +183,33 @@ function parseRoutineResponse(routineData, allowedExerciseMap) {
     }
     seenIds.add(exerciseId);
 
-    const sets = Array.isArray(exercise.sets)
-      ? exercise.sets.map((set, setIndex) => {
-          if (!set || typeof set !== 'object') {
-            throw new Error(`Set at index ${setIndex} for exercise ${exerciseId} is invalid`);
-          }
-          return {
-            kg: Number(set.kg ?? set.weight ?? 0) || 0,
-            reps: Number(set.reps ?? 0) || 0,
-            rest: Number(set.rest ?? set.rest_seconds ?? 60) || 60,
-          };
-        })
-      : [];
-
-    if (sets.length === 0) {
-      if (Number.isInteger(exercise.sets) && Number.isInteger(exercise.reps)) {
-        sets.push({
-          kg: Number(exercise.kg ?? exercise.weight ?? 0) || 0,
-          reps: Number(exercise.reps) || 0,
-          rest: Number(exercise.rest ?? exercise.rest_seconds ?? 60) || 60,
-        });
-      }
+    const allowedExerciseKeys = new Set(['exercise_id', 'exerciseId', 'id', 'notes', 'sets']);
+    const unexpectedExerciseKeys = Object.keys(exercise).filter((key) => !allowedExerciseKeys.has(key));
+    if (unexpectedExerciseKeys.length) {
+      throw new Error(`Exercise ${exerciseId} contains unexpected fields: ${unexpectedExerciseKeys.join(', ')}`);
     }
+
+    if (!Array.isArray(exercise.sets)) {
+      throw new Error(`Exercise ${exerciseId} must include a sets array`);
+    }
+
+    const sets = exercise.sets.map((set, setIndex) => {
+      if (!set || typeof set !== 'object' || Array.isArray(set)) {
+        throw new Error(`Set at index ${setIndex} for exercise ${exerciseId} is invalid`);
+      }
+
+      const allowedSetKeys = new Set(['kg', 'reps', 'rest']);
+      const unexpectedSetKeys = Object.keys(set).filter((key) => !allowedSetKeys.has(key));
+      if (unexpectedSetKeys.length) {
+        throw new Error(`Set ${setIndex} for exercise ${exerciseId} contains unexpected fields: ${unexpectedSetKeys.join(', ')}`);
+      }
+
+      return {
+        kg: Number(set.kg ?? 0) || 0,
+        reps: Number(set.reps ?? 0) || 0,
+        rest: Number(set.rest ?? 0) || 0,
+      };
+    });
 
     if (sets.length === 0) {
       throw new Error(`Exercise ${exerciseId} must include at least one set`);
@@ -360,10 +371,6 @@ app.post('/send-message', async (req, res) => {
             title: botResponseData.routine.title || botResponseData.routine.routine_name,
             exercises: botResponseData.routine.exercises,
           };
-
-          if (botResponseData.routine.difficulty != null) {
-            routinePayload.difficulty = botResponseData.routine.difficulty;
-          }
 
           const { data: routineData, error: routineError } = await supabase
             .from('routines')
