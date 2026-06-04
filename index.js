@@ -422,7 +422,7 @@ function buildAllowedExercisesPrompt(userMessage, allowedExercises, filters = {}
     : 'No explicit additional preferences were provided.';
 
   const bodyweightNote = userBodyweightKg
-    ? `\nUser bodyweight: ${userBodyweightKg} kg. For bodyweight related exercises, return the actual stored load in kg: use the user's bodyweight for BW exercises, BW + added weight for BW_WEIGHTED exercises, and BW - assistance weight for BW_ASSISTED exercises.`
+    ? `\nUser bodyweight: ${userBodyweightKg} kg. For bodyweight related exercises, return the actual stored load in kg: use the user's bodyweight for BW exercises, the total final load for BW_WEIGHTED exercises (bodyweight + added weight), and the actual reduced load for BW_ASSISTED exercises (bodyweight - assistance). Choose realistic weights based on the user's bodyweight.`
     : '';
 
   return `Based on this request: "${userMessage}"
@@ -453,6 +453,11 @@ ${exerciseList}
 Important:
 - Do not select exercises with category BW_TIMED or TIMED because the app does not currently implement a timer.
 - Prefer BW_ASSISTED for assisted calisthenics-style exercises when the user request mentions assistance.
+- Choose realistic weights relative to the user's bodyweight and the exercise category.
+- For BW_WEIGHTED exercises, the kg value must be the total final load after added weight. The added weight should be a moderate percentage of bodyweight, not an extreme or impossible load.
+- For BW_ASSISTED exercises, the kg value must be the actual assisted load after subtraction. The result should be a realistic reduced load, typically between 30% and 90% of bodyweight for assisted progressions.
+- For pure BW exercises, use the user's exact bodyweight as the load.
+- Do not return unrealistic values such as 0 kg, 1000 kg, or negative loads.
 - Only use the keys shown above.
 - Use only exercise_id, notes, and sets for each exercise.
 - Use only kg and reps for each set.
@@ -468,11 +473,11 @@ function parseNumberValue(raw) {
   if (typeof raw === 'number' && !Number.isNaN(raw)) return raw;
   const text = raw.toString().trim();
   if (!text) return 0;
-  if (/bw/i.test(text)) {
-    throw new Error(`Invalid weight format containing BW: "${text}"`);
-  }
-  const normalized = text.replace(/,/g, '');
-  const match = normalized.match(/[-+]?[0-9]*\.?[0-9]+/);
+
+  const sanitized = text
+    .replace(/,/g, '')
+    .replace(/bw|bodyweight|kg/gi, ' ');
+  const match = sanitized.match(/[0-9]*\.?[0-9]+/);
   if (!match) return 0;
   const value = Number(match[0]);
   return Number.isNaN(value) ? 0 : value;
