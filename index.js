@@ -468,6 +468,252 @@ Important:
 `;
 }
 
+async function fetchLatestUserRoutine(userUuid) {
+  if (!userUuid) return null;
+
+  const { data, error } = await supabase
+    .from('routines')
+    .select('*')
+    .eq('user_uuid', userUuid)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    console.warn('⚠️ Failed to fetch latest user routine:', error.message || error);
+    return null;
+  }
+
+  return data;
+}
+
+function buildAllowedExercisesEditPrompt(userMessage, currentRoutine, allowedExercises, filters = {}, userBodyweightKg = null) {
+  const exerciseList = allowedExercises
+    .map((exercise) => {
+      const secondary = exercise.secondaryMuscles?.length ? exercise.secondaryMuscles.join(', ') : 'None';
+      return `- ID ${exercise.id}: ${exercise.name} | bodyPart: ${exercise.bodyPart || 'Unknown'} | equipment: ${exercise.equipment || 'None'} | target: ${exercise.target || 'None'} | secondaryMuscles: ${secondary} | difficulty: ${exercise.difficulty || 'Unknown'} | workoutType: ${exercise.workoutType || 'General'} | category: ${exercise.category || 'General'} | cardCategory: ${exercise.cardCategory || 'NORMAL'}`;
+    })
+    .join('\n');
+
+  const currentRoutineList = Array.isArray(currentRoutine.exercises)
+    ? currentRoutine.exercises
+        .map((exercise) => {
+          const exerciseId = exercise.exerciseId ?? exercise.id ?? 'unknown';
+          const exerciseName = exercise.name || 'Unknown';
+          const notes = Array.isArray(exercise.notes) ? exercise.notes.join(', ') : 'None';
+          const sets = Array.isArray(exercise.sets)
+            ? exercise.sets.map((set) => `${set.reps || '?'} reps @ ${set.kg || set.weight || '?'} kg`).join('; ')
+            : 'None';
+          const cardCategory = exercise.exercise_card_category || exercise.cardCategory || exercise.category || 'NORMAL';
+          return `- ID ${exerciseId}: ${exerciseName} | sets: ${sets} | notes: ${notes} | category: ${cardCategory}`;
+        })
+        .join('\n')
+    : 'No current routine exercises available.';
+
+  const preferenceFragments = [];
+  if (filters.muscleGroups?.length) preferenceFragments.push(`Muscle groups: ${filters.muscleGroups.join(', ')}`);
+  if (filters.equipment?.length) preferenceFragments.push(`Equipment: ${filters.equipment.join(', ')}`);
+  if (filters.difficulty?.length) preferenceFragments.push(`Difficulty: ${filters.difficulty.join(', ')}`);
+  if (filters.workoutType?.length) preferenceFragments.push(`Workout type: ${filters.workoutType.join(', ')}`);
+
+  const preferenceText = preferenceFragments.length
+    ? `User preferences:\n${preferenceFragments.join('\n')}`
+    : 'No explicit additional preferences were provided.';
+
+  const bodyweightNote = userBodyweightKg
+    ? `\nUser bodyweight: ${userBodyweightKg} kg. For bodyweight related exercises, return the actual stored load in kg: use the user's bodyweight for BW exercises, the total final load for BW_WEIGHTED exercises (bodyweight + added weight), and the actual reduced load for BW_ASSISTED exercises (bodyweight - assistance). Choose realistic weights based on the user's bodyweight.`
+    : '';
+
+  return `Based on this request: "${userMessage}"
+${preferenceText}${bodyweightNote}
+
+You are a professional fitness coach. The user already has a saved routine. Use the current routine below and make only the changes requested by the user. Preserve the existing structure, balance, and the exercises that are not explicitly replaced.
+
+Current saved routine:
+${currentRoutine.title || 'Untitled Routine'}
+${currentRoutineList}
+
+Available exercise candidates:
+${exerciseList}
+
+Important:
+- Keep the routine between 4 and 8 unique exercises.
+- Do not invent, rename, substitute, or use any exercise that is not present in the candidate list.
+- If the user asks to replace one exercise, select the best replacement from the candidate list and keep the rest of the routine unchanged unless balance requires a small adjustment.
+- Keep the routine title the same unless the user explicitly asks to rename it.
+- Return only valid JSON in this exact format:
+{
+  "title": "string",
+  "exercises": [
+    {
+      "exercise_id": number,
+      "notes": ["string"],
+      "sets": [
+        { "kg": number, "reps": number }
+      ]
+    }
+  ]
+}
+- Do not select exercises with category BW_TIMED or TIMED because the app does not currently implement a timer.
+- Prefer BW_ASSISTED for assisted calisthenics-style exercises when the user request mentions assistance.
+- Choose realistic weights relative to the user's bodyweight and the exercise category.
+- For BW_WEIGHTED exercises, the kg value must be the total final load after added weight.
+- For BW_ASSISTED exercises, the kg value must be the actual assisted load after subtraction.
+- For pure BW exercises, use the user's exact bodyweight as the load.
+- Do not return unrealistic values such as 0 kg, 1000 kg, or negative loads.
+- Only use the keys shown above.
+- Use only exercise_id, notes, and sets for each exercise.
+- Use only kg and reps for each set.
+- For bodyweight, assisted, and weighted-bodyweight exercises, do NOT include BW, BW +, BW -, or any display-formatted weight text in the JSON.
+- Do not include any other fields such as name, bodyPart, gifUrl, difficulty, rest_seconds, restSeconds, weight, or workout_type.
+- Do not use exercise-level reps or set counts.
+- Do not include markdown, comments, or extra text.
+`;
+}
+
+async function editAndSaveRoutine(userMessage, userId, filters = {}, currentRoutine) {
+  if (!currentRoutine || !currentRoutine.id) {
+    throw new Error('Current routine is required to edit');
+  }
+
+  const geminiApiKey = process.env.GEMINI_API_KEY;
+  if (!geminiApiKey) {
+    throw new Error('GEMINI_API_KEY not configured in environment');
+  }
+
+  const candidateExercises = await fetchCandidateExercises(filters);
+  const allowedExerciseMap = new Map(candidateExercises.map((exercise) => [exercise.id, exercise]));
+
+  if (Array.isArray(currentRoutine.exercises)) {
+    for (const exercise of currentRoutine.exercises) {
+      const exerciseId = Number(exercise.exerciseId ?? exercise.id ?? exercise.exercise_id);
+      if (!Number.isInteger(exerciseId) || allowedExerciseMap.has(exerciseId)) {
+        continue;
+      }
+
+      allowedExerciseMap.set(exerciseId, {
+        id: exerciseId,
+        name: exercise.name || 'Unknown',
+        bodyPart: exercise.bodyPart || 'Unknown',
+        target: exercise.target || '',
+        equipment: exercise.equipment || '',
+        difficulty: exercise.difficulty || '',
+        workoutType: exercise.workoutType || exercise.type || '',
+        category: exercise.category || '',
+        cardCategory: exercise.exercise_card_category || exercise.cardCategory || exercise.card_category || 'NORMAL',
+        secondaryMuscles: Array.isArray(exercise.secondaryMuscles) ? exercise.secondaryMuscles : [],
+        gifUrl: exercise.gifUrl || '',
+      });
+    }
+  }
+
+  const allowedExercises = Array.from(allowedExerciseMap.values());
+  const userBodyweightKg = await fetchLatestUserBodyweight(userId);
+  const prompt = buildAllowedExercisesEditPrompt(userMessage, currentRoutine, allowedExercises, filters, userBodyweightKg);
+
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${geminiApiKey}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      contents: [{
+        parts: [{
+          text: prompt
+        }]
+      }],
+      generationConfig: {
+        maxOutputTokens: 1024,
+        temperature: 0.7,
+      }
+    })
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json();
+    throw new Error(`Gemini API error: ${response.status} - ${JSON.stringify(errorData)}`);
+  }
+
+  const data = await response.json();
+  let routineJson = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+  if (!routineJson) {
+    throw new Error('Empty response from Gemini for routine edit');
+  }
+
+  let routineData;
+  try {
+    routineData = parseJsonResponseText(routineJson);
+  } catch (parseError) {
+    console.warn('⚠️ First routine edit parse failed, retrying once. Raw response:', routineJson, parseError.message);
+
+    const retryResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${geminiApiKey}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        contents: [{
+          parts: [{
+            text: `${prompt}\n\nThe previous response was invalid JSON. Reply again with only valid JSON in the same format, and do not include any extra text or markdown.`
+          }]
+        }],
+        generationConfig: {
+          maxOutputTokens: 1024,
+          temperature: 0.0,
+        }
+      })
+    });
+
+    if (!retryResponse.ok) {
+      const retryErrorData = await retryResponse.json();
+      throw new Error(`Gemini retry error: ${retryResponse.status} - ${JSON.stringify(retryErrorData)}`);
+    }
+
+    const retryData = await retryResponse.json();
+    const retryText = retryData.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+    if (!retryText) {
+      throw new Error('Empty retry response from Gemini for routine edit');
+    }
+    routineData = parseJsonResponseText(retryText);
+  }
+
+  const parsedRoutine = parseRoutineResponse(routineData, allowedExerciseMap);
+
+  const routineExercises = parsedRoutine.exercises.map((exercise) => {
+    const catalog = allowedExerciseMap.get(exercise.exerciseId);
+    const exerciseCardCategory = catalog.exercise_card_category || catalog.cardCategory || catalog.card_category || 'NORMAL';
+
+    const normalizedSets = Array.isArray(exercise.sets)
+      ? exercise.sets.map((set) => ({
+          kg: normalizeBwSetWeight(set, exerciseCardCategory, userBodyweightKg),
+          reps: Math.max(0, Math.floor(parseNumberValue(set.reps ?? 0))),
+        }))
+      : [];
+
+    return {
+      id: catalog.id,
+      name: catalog.name,
+      notes: exercise.notes,
+      sets: normalizedSets,
+      bodyPart: catalog.bodyPart,
+      secondaryMuscles: catalog.secondaryMuscles,
+      gifUrl: catalog.gifUrl,
+      exercise_card_category: exerciseCardCategory,
+    };
+  });
+
+  const normalized = {
+    title: parsedRoutine.title || currentRoutine.title || 'Updated Routine',
+    exercises: routineExercises,
+  };
+
+  normalized.expected_time = calculateExpectedTime(normalized.exercises);
+  normalized.difficulty = calculateDifficulty(normalized.exercises);
+
+  console.log('✅ Routine edited:', normalized.title);
+  return normalized;
+}
+
 function parseNumberValue(raw) {
   if (raw == null) return 0;
   if (typeof raw === 'number' && !Number.isNaN(raw)) return raw;
@@ -534,6 +780,23 @@ function normalizeBwSetWeight(set, exerciseCardCategory, userBodyweightKg) {
   }
 
   return originalKg;
+}
+
+function summarizeRoutine(routine) {
+  if (!routine || !Array.isArray(routine.exercises) || routine.exercises.length === 0) {
+    return '';
+  }
+
+  const summaryExercises = routine.exercises.map((exercise) => {
+    const name = exercise.name || `Exercise ${exercise.id || ''}`;
+    const sets = Array.isArray(exercise.sets)
+      ? exercise.sets.map((set) => `${Math.max(0, Math.floor(parseNumberValue(set.reps ?? 0)))} reps @ ${parseNumberValue(set.kg ?? set.weight ?? 0)} kg`).join(', ')
+      : 'sets unavailable';
+    return `${name} (${sets})`;
+  });
+
+  const titles = summaryExercises.length <= 4 ? summaryExercises.join('; ') : `${summaryExercises.slice(0, 4).join('; ')}; and ${summaryExercises.length - 4} more exercise(s)`;
+  return `The routine "${routine.title || 'Your Routine'}" includes ${routine.exercises.length} exercises: ${titles}.`;
 }
 
 function extractJsonString(text) {
@@ -882,16 +1145,18 @@ async function classifyUserIntent(userMessage) {
 
   const prompt = `Classify the user message into ONE of these intents:
 - "WORKOUT_GENERATION"
+- "ROUTINE_EDIT"
 - "FITNESS_CHAT"
 
 Also extract any explicit workout preferences found in the message. Return ONLY valid JSON in this exact shape:
 {
-  "intent": "WORKOUT_GENERATION" | "FITNESS_CHAT",
+  "intent": "WORKOUT_GENERATION" | "ROUTINE_EDIT" | "FITNESS_CHAT",
   "goal": "string",
   "muscleGroups": ["string"],
   "equipment": ["string"],
   "difficulty": "string",
-  "duration": number
+  "duration": number,
+  "modification": "string"
 }
 
 If a field cannot be determined, use an empty string, empty array, or 0.
@@ -963,6 +1228,61 @@ async function generateBotResponse(userMessage, userId, filters = {}) {
     const intentData = await classifyUserIntent(userMessage);
     console.log('🔎 Intent detection result:', intentData);
 
+    if (intentData.intent === 'ROUTINE_EDIT') {
+      console.log('✏️ Routine edit intent detected, updating saved routine...');
+
+      const existingRoutine = await fetchLatestUserRoutine(userId);
+      if (!existingRoutine) {
+        throw new Error('No existing routine found to edit.');
+      }
+
+      const mergedFilters = {
+        muscleGroups: [...new Set([...(filters.muscleGroups || []), ...intentData.muscleGroups])],
+        equipment: [...new Set([...(filters.equipment || []), ...intentData.equipment])],
+        difficulty: [...new Set([...(filters.difficulty || []), ...(intentData.difficulty ? [intentData.difficulty] : [])])],
+        workoutType: [...new Set([...(filters.workoutType || []), ...(intentData.goal ? [intentData.goal] : [])])],
+      };
+
+      const enhancedFilters = normalizeWorkoutFilters({
+        ...mergedFilters,
+        goal: intentData.goal,
+        userMessage,
+      });
+
+      const routine = await editAndSaveRoutine(userMessage, userId, enhancedFilters, existingRoutine);
+      let savedRoutine = null;
+      let routineSaved = false;
+
+      const { data: updatedRoutine, error: routineError } = await supabase
+        .from('routines')
+        .update({
+          title: routine.title,
+          exercises: routine.exercises,
+          expected_time: routine.expected_time,
+          difficulty: routine.difficulty,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', existingRoutine.id)
+        .select()
+        .single();
+
+      if (routineError) {
+        console.error('⚠️ Failed to update edited routine:', routineError);
+      } else {
+        savedRoutine = updatedRoutine;
+        routineSaved = true;
+      }
+
+      const routineTitle = routine.title || existingRoutine.title || 'Updated Routine';
+      const routineSummary = summarizeRoutine(routine);
+      return {
+        message: `I've updated your routine "${routineTitle}" according to your request. ${routineSummary} Tell me if you'd like to make any further changes.`,
+        routine: routine,
+        botRoutine: savedRoutine,
+        routineSaved,
+      };
+    }
+
     if (intentData.intent === 'WORKOUT_GENERATION') {
       console.log('📋 Workout intent detected, generating routine...');
 
@@ -981,8 +1301,9 @@ async function generateBotResponse(userMessage, userId, filters = {}) {
 
       const routine = await generateAndSaveRoutine(userMessage, userId, enhancedFilters);
       const routineTitle = routine.title || routine.routine_name || 'New Routine';
+      const routineSummary = summarizeRoutine(routine);
       return {
-        message: `I've created a personalized workout routine called "${routineTitle}". Check your Routines section to view and track it. 💪`,
+        message: `I've created a personalized workout routine called "${routineTitle}". ${routineSummary} Tell me if you'd like to replace or adjust any exercise.`,
         routine: routine
       };
     }
