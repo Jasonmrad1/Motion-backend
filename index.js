@@ -385,7 +385,7 @@ async function fetchCandidateExercises(filters = {}) {
   return relaxedExercises.slice(0, DEFAULT_ALLOWED_EXERCISE_LIMIT);
 }
 
-function buildAllowedExercisesPrompt(userMessage, allowedExercises, filters = {}) {
+function buildAllowedExercisesPrompt(userMessage, allowedExercises, filters = {}, userBodyweightKg = null) {
   const exerciseList = allowedExercises
     .map((exercise) => {
       const secondary = exercise.secondaryMuscles?.length ? exercise.secondaryMuscles.join(', ') : 'None';
@@ -403,8 +403,12 @@ function buildAllowedExercisesPrompt(userMessage, allowedExercises, filters = {}
     ? `User preferences:\n${preferenceFragments.join('\n')}`
     : 'No explicit additional preferences were provided.';
 
+  const bodyweightNote = userBodyweightKg
+    ? `\nUser bodyweight: ${userBodyweightKg} kg. For bodyweight related exercises, return the actual stored load in kg: use the user's bodyweight for BW exercises, BW + added weight for BW_WEIGHTED exercises, and BW - assistance weight for BW_ASSISTED exercises.`
+    : '';
+
   return `Based on this request: "${userMessage}"
-${preferenceText}
+${preferenceText}${bodyweightNote}
 
 You are a professional fitness coach. From the exercise candidate list below, select the best exercises and build a workout routine like a real coach.
 Use only exercises from the candidate list. Do not invent, rename, substitute, or use any exercise that is not present.
@@ -454,6 +458,59 @@ function parseNumberValue(raw) {
   if (!match) return 0;
   const value = Number(match[0]);
   return Number.isNaN(value) ? 0 : value;
+}
+
+async function fetchLatestUserBodyweight(userUuid) {
+  if (!userUuid) return null;
+
+  const { data, error } = await supabase
+    .from('measurements')
+    .select('value')
+    .eq('user_uuid', userUuid)
+    .eq('name', 'weight')
+    .order('created_at', { ascending: false })
+    .limit(1);
+
+  if (error) {
+    console.warn('⚠️ Failed to fetch user bodyweight measurement:', error.message || error);
+    return null;
+  }
+
+  const row = Array.isArray(data) && data.length ? data[0] : null;
+  const weightValue = row?.value;
+  const parsedWeight = parseNumberValue(weightValue);
+  return parsedWeight > 0 ? parsedWeight : null;
+}
+
+function normalizeBwSetWeight(set, exerciseCardCategory, userBodyweightKg) {
+  const originalKg = parseNumberValue(set.kg ?? set.weight ?? 0);
+  if (!userBodyweightKg || !Number.isFinite(userBodyweightKg) || userBodyweightKg <= 0) {
+    return originalKg;
+  }
+
+  const normalizedCategory = (exerciseCardCategory || '').toString().toUpperCase();
+  if (normalizedCategory === 'BW') {
+    return userBodyweightKg;
+  }
+
+  if (normalizedCategory === 'BW_WEIGHTED') {
+    if (originalKg > 0 && originalKg < userBodyweightKg * 0.6) {
+      return userBodyweightKg + originalKg;
+    }
+    return originalKg;
+  }
+
+  if (normalizedCategory === 'BW_ASSISTED') {
+    if (originalKg > 0 && originalKg < userBodyweightKg * 0.6) {
+      return Math.max(userBodyweightKg - originalKg, 0);
+    }
+    if (originalKg > userBodyweightKg) {
+      return userBodyweightKg;
+    }
+    return originalKg;
+  }
+
+  return originalKg;
 }
 
 function extractJsonString(text) {
@@ -975,7 +1032,8 @@ async function generateAndSaveRoutine(userMessage, userId, filters = {}) {
     }
 
     const allowedExerciseMap = new Map(candidateExercises.map((exercise) => [exercise.id, exercise]));
-    const prompt = buildAllowedExercisesPrompt(userMessage, candidateExercises, filters);
+    const userBodyweightKg = await fetchLatestUserBodyweight(userId);
+    const prompt = buildAllowedExercisesPrompt(userMessage, candidateExercises, filters, userBodyweightKg);
 
     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${geminiApiKey}`, {
       method: 'POST',
@@ -1048,15 +1106,24 @@ async function generateAndSaveRoutine(userMessage, userId, filters = {}) {
 
     const routineExercises = parsedRoutine.exercises.map((exercise) => {
       const catalog = allowedExerciseMap.get(exercise.exerciseId);
+      const exerciseCardCategory = catalog.exercise_card_category || catalog.cardCategory || catalog.card_category || 'NORMAL';
+
+      const normalizedSets = Array.isArray(exercise.sets)
+        ? exercise.sets.map((set) => ({
+            kg: normalizeBwSetWeight(set, exerciseCardCategory, userBodyweightKg),
+            reps: Math.max(0, Math.floor(parseNumberValue(set.reps ?? 0))),
+          }))
+        : [];
+
       return {
         id: catalog.id,
         name: catalog.name,
         notes: exercise.notes,
-        sets: exercise.sets,
+        sets: normalizedSets,
         bodyPart: catalog.bodyPart,
         secondaryMuscles: catalog.secondaryMuscles,
         gifUrl: catalog.gifUrl,
-        exercise_card_category: catalog.exercise_card_category,
+        exercise_card_category: exerciseCardCategory,
       };
     });
 
