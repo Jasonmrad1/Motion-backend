@@ -189,7 +189,7 @@ async function fetchCandidateExercises(filters = {}) {
     return [];
   }
 
-  return exercises
+  const normalizedExercises = exercises
     .map((exercise) => {
       const secondaryMuscles = Array.isArray(exercise.secondaryMuscles)
         ? exercise.secondaryMuscles.map((m) => String(m))
@@ -213,27 +213,79 @@ async function fetchCandidateExercises(filters = {}) {
         exercise_card_category: exercise.exercise_card_category || exercise.exerciseCardCategory || 'NORMAL',
       };
     })
-    .filter((exercise) => exercise.id && exercise.name)
-    .filter((exercise) => {
-      if (effectiveMuscleGroups.length) {
-        const muscleMatch = [exercise.bodyPart, exercise.target]
-          .filter(Boolean)
-          .some((field) => matchesFilterValue(field, effectiveMuscleGroups));
-        const secondaryMatch = exercise.secondaryMuscles.some((muscle) => matchesFilterValue(muscle, effectiveMuscleGroups));
-        if (!muscleMatch && !secondaryMatch) return false;
-      }
-      if (equipment.length && !matchesFilterValue(exercise.equipment, equipment)) {
-        return false;
-      }
-      if (difficulty.length && exercise.difficulty) {
-        if (!matchesFilterValue(exercise.difficulty, difficulty)) return false;
-      }
-      if (workoutType.length && exercise.workoutType) {
-        if (!matchesFilterValue(exercise.workoutType, workoutType)) return false;
-      }
-      return true;
-    })
-    .slice(0, DEFAULT_ALLOWED_EXERCISE_LIMIT);
+    .filter((exercise) => exercise.id && exercise.name);
+
+  const matchesFilters = (exercise, options) => {
+    if (options.enforceMuscleGroups && effectiveMuscleGroups.length) {
+      const muscleMatch = [exercise.bodyPart, exercise.target]
+        .filter(Boolean)
+        .some((field) => matchesFilterValue(field, effectiveMuscleGroups));
+      const secondaryMatch = exercise.secondaryMuscles.some((muscle) => matchesFilterValue(muscle, effectiveMuscleGroups));
+      if (!muscleMatch && !secondaryMatch) return false;
+    }
+    if (options.enforceEquipment && equipment.length && !matchesFilterValue(exercise.equipment, equipment)) {
+      return false;
+    }
+    if (options.enforceDifficulty && difficulty.length && exercise.difficulty) {
+      if (!matchesFilterValue(exercise.difficulty, difficulty)) return false;
+    }
+    if (options.enforceWorkoutType && workoutType.length && exercise.workoutType) {
+      if (!matchesFilterValue(exercise.workoutType, workoutType)) return false;
+    }
+    return true;
+  };
+
+  let filteredExercises = normalizedExercises.filter((exercise) =>
+    matchesFilters(exercise, {
+      enforceMuscleGroups: true,
+      enforceEquipment: true,
+      enforceDifficulty: true,
+      enforceWorkoutType: true,
+    }),
+  );
+
+  if (!filteredExercises.length) {
+    console.warn('⚠️ No exercises matched strict filters, relaxing filter rules', { muscleGroups, equipment, difficulty, workoutType });
+
+    if (workoutType.length) {
+      filteredExercises = normalizedExercises.filter((exercise) =>
+        matchesFilters(exercise, {
+          enforceMuscleGroups: true,
+          enforceEquipment: true,
+          enforceDifficulty: true,
+          enforceWorkoutType: false,
+        }),
+      );
+    }
+  }
+
+  if (!filteredExercises.length && difficulty.length) {
+    filteredExercises = normalizedExercises.filter((exercise) =>
+      matchesFilters(exercise, {
+        enforceMuscleGroups: true,
+        enforceEquipment: true,
+        enforceDifficulty: false,
+        enforceWorkoutType: false,
+      }),
+    );
+  }
+
+  if (!filteredExercises.length && equipment.length) {
+    filteredExercises = normalizedExercises.filter((exercise) =>
+      matchesFilters(exercise, {
+        enforceMuscleGroups: true,
+        enforceEquipment: false,
+        enforceDifficulty: false,
+        enforceWorkoutType: false,
+      }),
+    );
+  }
+
+  if (!filteredExercises.length && effectiveMuscleGroups.length) {
+    filteredExercises = normalizedExercises;
+  }
+
+  return filteredExercises.slice(0, DEFAULT_ALLOWED_EXERCISE_LIMIT);
 }
 
 function buildAllowedExercisesPrompt(userMessage, allowedExercises, filters = {}) {
