@@ -158,6 +158,31 @@ function normalizeExerciseBodyPart(rawBodyPart, rawTarget, secondaryMuscles = []
   return rawBodyPart || rawTarget || 'General';
 }
 
+function normalizeSearchText(value) {
+  if (!value) return '';
+  return value
+    .toString()
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function findExplicitExerciseMatches(userMessage, exercises) {
+  const normalizedMessage = normalizeSearchText(userMessage);
+  if (!normalizedMessage || !Array.isArray(exercises)) return [];
+
+  return exercises.filter((exercise) => {
+    const normalizedName = normalizeSearchText(exercise.name);
+    if (!normalizedName) return false;
+    if (normalizedMessage.includes(normalizedName)) return true;
+
+    const compactMessage = normalizedMessage.replace(/\s+/g, '');
+    const compactName = normalizedName.replace(/\s+/g, '');
+    return compactName && compactMessage.includes(compactName);
+  });
+}
+
 function matchesFilterValue(cellValue, filterValues) {
   if (!filterValues?.length) return true;
   if (!cellValue) return false;
@@ -247,7 +272,7 @@ function calculateDifficulty(exercises) {
   return 'Advanced';
 }
 
-async function fetchCandidateExercises(filters = {}) {
+async function fetchCandidateExercises(filters = {}, userMessage = '') {
   const {
     muscleGroups = [],
     equipment = [],
@@ -298,6 +323,9 @@ async function fetchCandidateExercises(filters = {}) {
       };
     })
     .filter((exercise) => exercise.id && exercise.name);
+
+  const explicitRequestedExercises = findExplicitExerciseMatches(userMessage, normalizedExercises);
+  const explicitExerciseIds = new Set(explicitRequestedExercises.map((exercise) => exercise.id));
 
   const matchesCardCategory = (cardCategoryValue) => {
     if (!cardCategories.length) return true;
@@ -350,7 +378,9 @@ async function fetchCandidateExercises(filters = {}) {
   });
 
   if (filteredExercises.length) {
-    return filteredExercises.slice(0, DEFAULT_ALLOWED_EXERCISE_LIMIT);
+    const explicitOnly = explicitRequestedExercises.filter((exercise) => !filteredExercises.some((item) => item.id === exercise.id));
+    const ordered = [...explicitRequestedExercises, ...filteredExercises.filter((exercise) => !explicitExerciseIds.has(exercise.id))];
+    return ordered.slice(0, DEFAULT_ALLOWED_EXERCISE_LIMIT);
   }
 
   console.warn('⚠️ No exercises matched strict filters, relaxing filter rules', {
@@ -404,15 +434,16 @@ async function fetchCandidateExercises(filters = {}) {
     ? relaxedExercises
     : normalizedExercises;
 
-  if (!finalCandidates.length) {
+  const orderedFinalCandidates = [
+    ...explicitRequestedExercises,
+    ...finalCandidates.filter((exercise) => !explicitExerciseIds.has(exercise.id)),
+  ];
+
+  if (!orderedFinalCandidates.length) {
     return [];
   }
 
-  console.warn('⚠️ No exercises matched relaxed filters, defaulting to broad exercise candidate set', {
-    totalExercises: normalizedExercises.length,
-  });
-
-  return finalCandidates.slice(0, DEFAULT_ALLOWED_EXERCISE_LIMIT);
+  return orderedFinalCandidates.slice(0, DEFAULT_ALLOWED_EXERCISE_LIMIT);
 }
 
 function buildAllowedExercisesPrompt(userMessage, allowedExercises, filters = {}, userBodyweightKg = null) {
@@ -441,6 +472,7 @@ function buildAllowedExercisesPrompt(userMessage, allowedExercises, filters = {}
 ${preferenceText}${bodyweightNote}
 
 You are a professional fitness coach. From the exercise candidate list below, select the best exercises and build a workout routine like a real coach.
+If the user specifically requests a named exercise, prefer that exercise from the allowed candidate list.
 Use only exercises from the candidate list. Do not invent, rename, substitute, or use any exercise that is not present.
 
 Design a balanced routine that fits the user's goal and constraints. Use 4-8 unique exercises. Choose the appropriate sets, reps, and notes for each exercise.
@@ -540,6 +572,7 @@ function buildAllowedExercisesEditPrompt(userMessage, currentRoutine, allowedExe
 ${preferenceText}${bodyweightNote}
 
 You are a professional fitness coach. The user already has a saved routine. Use the current routine below and make only the changes requested by the user. Preserve the existing structure, balance, and the exercises that are not explicitly replaced.
+If the user specifically requests a named exercise, prefer that exercise from the allowed candidate list.
 
 Current saved routine:
 ${currentRoutine.title || 'Untitled Routine'}
@@ -593,7 +626,7 @@ async function editAndSaveRoutine(userMessage, userId, filters = {}, currentRout
     throw new Error('GEMINI_API_KEY not configured in environment');
   }
 
-  const candidateExercises = await fetchCandidateExercises(filters);
+  const candidateExercises = await fetchCandidateExercises(filters, userMessage);
   const allowedExerciseMap = new Map(candidateExercises.map((exercise) => [exercise.id, exercise]));
 
   if (Array.isArray(currentRoutine.exercises)) {
@@ -1400,7 +1433,7 @@ async function generateAndSaveRoutine(userMessage, userId, filters = {}) {
       throw new Error('GEMINI_API_KEY not configured in environment');
     }
 
-    const candidateExercises = await fetchCandidateExercises(filters);
+    const candidateExercises = await fetchCandidateExercises(filters, userMessage);
     if (!candidateExercises.length) {
       throw new Error('No exercise candidates available for routine generation');
     }
