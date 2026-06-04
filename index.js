@@ -476,6 +476,7 @@ If the user specifically requests a named exercise, prefer that exercise from th
 Use only exercises from the candidate list. Do not invent, rename, substitute, or use any exercise that is not present.
 
 Design a balanced routine that fits the user's goal and constraints. Use 4-8 unique exercises. Choose the appropriate sets, reps, and notes for each exercise.
+Give the routine a meaningful title that reflects the user's request or the workout focus.
 
 Return only valid JSON in this exact format:
 {
@@ -573,6 +574,7 @@ ${preferenceText}${bodyweightNote}
 
 You are a professional fitness coach. The user already has a saved routine. Use the current routine below and make only the changes requested by the user. Preserve the existing structure, balance, and the exercises that are not explicitly replaced.
 If the user specifically requests a named exercise, prefer that exercise from the allowed candidate list.
+If the user's request changes the routine focus or asks for a new routine title, update the title accordingly. Keep the existing title only when no rename or focus change is requested.
 
 Current saved routine:
 ${currentRoutine.title || 'Untitled Routine'}
@@ -1122,13 +1124,18 @@ app.post('/send-message', async (req, res) => {
         }
         
         // Insert bot response message into Supabase (use friendly message)
+        let botMessageText = botResponseData.message;
+        if (savedRoutine && savedRoutine.id) {
+          botMessageText += `\n\n[ROUTINE_ID:${savedRoutine.id}]`;
+        }
+
         const { data: botMessage, error: botInsertError } = await supabase
           .from('messages')
           .insert({
             conversation_id: conversationId,
             sender_id: BOT_USER_ID,
             sender_role: 'coach',
-            content: botResponseData.message,
+            content: botMessageText,
           })
           .select()
           .single();
