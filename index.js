@@ -41,6 +41,88 @@ function matchesFilterValue(cellValue, filterValues) {
   return filterValues.some((filter) => normalizedCell.includes(filter.toString().toLowerCase()));
 }
 
+function calculateExpectedTime(exercises) {
+  if (!Array.isArray(exercises) || exercises.length === 0) return 0;
+
+  let totalTimeSec = 0;
+
+  for (const exercise of exercises) {
+    const sets = Array.isArray(exercise.sets) ? exercise.sets : [];
+    const setsCount = sets.length || 3;
+
+    let totalReps = 0;
+    for (const set of sets) {
+      const reps = Number(set?.reps ?? 10) || 10;
+      totalReps += reps;
+    }
+    if (totalReps === 0) totalReps = setsCount * 10;
+
+    const diff = (exercise.difficulty ?? 'easy').toString().toLowerCase();
+    let exerciseTime = Math.round(totalReps * 2.5);
+
+    let restTimePerSet;
+    switch (diff) {
+      case 'hard':
+        restTimePerSet = 75;
+        break;
+      case 'intermediate':
+        restTimePerSet = 60;
+        break;
+      default:
+        restTimePerSet = 45;
+    }
+
+    exerciseTime += (setsCount - 1) * restTimePerSet;
+    totalTimeSec += exerciseTime;
+  }
+
+  totalTimeSec += 120;
+  return Math.round(totalTimeSec / 60);
+}
+
+function calculateDifficulty(exercises) {
+  if (!Array.isArray(exercises) || exercises.length === 0) return 'Easy';
+
+  let totalScore = 0;
+
+  for (const exercise of exercises) {
+    const sets = Array.isArray(exercise.sets) ? exercise.sets : [];
+    const setsCount = sets.length || 3;
+
+    let exerciseIntensity = 0;
+    for (const set of sets) {
+      const reps = Number(set?.reps ?? 10) || 10;
+      const weight = Number(set?.kg ?? 0) || 0;
+      if (reps > 0 && weight > 0) {
+        exerciseIntensity += weight * (12 / reps);
+      } else {
+        exerciseIntensity += reps * 0.5;
+      }
+    }
+
+    const diff = (exercise.difficulty ?? 'easy').toString().toLowerCase();
+    let difficultyMultiplier;
+    switch (diff) {
+      case 'hard':
+        difficultyMultiplier = 2.0;
+        break;
+      case 'intermediate':
+        difficultyMultiplier = 1.5;
+        break;
+      default:
+        difficultyMultiplier = 1.0;
+    }
+
+    totalScore += setsCount * exerciseIntensity * difficultyMultiplier;
+  }
+
+  const normalizedScore = totalScore / exercises.length;
+  if (normalizedScore < 20) return 'Easy';
+  if (normalizedScore < 50) return 'Medium';
+  if (normalizedScore < 100) return 'Hard';
+  return 'Advanced';
+}
+
 async function fetchAllowedExercises(filters = {}) {
   const { muscleGroups = [], equipment = [], difficulty = [], workoutType = [] } = filters;
   const { data: exercises, error } = await supabase
@@ -370,6 +452,8 @@ app.post('/send-message', async (req, res) => {
             user_uuid: senderId,
             title: botResponseData.routine.title || botResponseData.routine.routine_name,
             exercises: botResponseData.routine.exercises,
+            expected_time: botResponseData.routine.expected_time,
+            difficulty: botResponseData.routine.difficulty,
           };
 
           const { data: routineData, error: routineError } = await supabase
@@ -596,6 +680,9 @@ async function generateAndSaveRoutine(userMessage, userId, filters = {}) {
       title: parsedRoutine.title,
       exercises: routineExercises,
     };
+
+    normalized.expected_time = calculateExpectedTime(normalized.exercises);
+    normalized.difficulty = calculateDifficulty(normalized.exercises);
 
     console.log('✅ Routine generated:', normalized.title);
     return normalized;
@@ -866,87 +953,6 @@ app.get('/list-conversations', async (req, res) => {
     });
   }
 });
-
-app.post('/generate-routine', async (req, res) => {
-  try {
-    const { userId, goal, level, equipment, bodyParts } = req.body;
-
-    if (!userId || !goal || !level) {
-      return res.status(400).json({
-        success: false,
-        message: "userId, goal, and level are required"
-      });
-    }
-
-    // 1. Fetch exercises from Supabase
-    const { data: exercises, error: exError } = await supabase
-      .from("exercises")
-      .select("id,name,bodyPart,equipment,target")
-      .in("bodyPart", bodyParts || ["chest","legs","back"])
-      .in("equipment", equipment || ["bodyweight","dumbbell"])
-      .limit(50);
-
-    if (exError || !exercises?.length) {
-      return res.status(404).json({
-        success: false,
-        message: "No exercises found"
-      });
-    }
-
-    // 2. Format exercise list for AI
-    const exerciseList = exercises.map(e => `ID ${e.id}: ${e.name} (${e.equipment}, ${e.bodyPart})`).join("\n");
-
-    // 3. Prompt for Groq
-    const prompt = `
-You are a professional fitness coach.
-Generate a workout routine for a user with these details:
-Goal: ${goal}
-Level: ${level}
-
-Use ONLY the exercises below.
-Return ONLY valid JSON in this format:
-{
-  "routine_name": string,
-  "exercises": [
-    {"id": number, "sets": number, "reps": number, "rest": number}
-  ]
-}
-
-Exercises list:
-${exerciseList}
-`;
-
-    // 4. Call Groq API
-    const response = await fetch("https://api.groq.com/v1/generate", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${process.env.GROQ_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: "groq-llm-mini",
-        prompt: prompt,
-        max_tokens: 500
-      })
-    });
-
-    const data = await response.json();
-    const routineJson = data.output_text; // adjust depending on Groq API response
-
-    return res.status(200).json({
-      success: true,
-      data: JSON.parse(routineJson)
-    });
-
-  } catch (err) {
-    console.error("❌ Routine generation error:", err);
-    return res.status(500).json({
-      success: false,
-      message: err.message
-    });
-  }
-});
-
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Server running on http://localhost:${PORT}`));
