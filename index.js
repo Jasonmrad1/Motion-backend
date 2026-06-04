@@ -262,7 +262,7 @@ async function fetchCandidateExercises(filters = {}) {
   const { data: exercises, error } = await supabase
     .from('exercises')
     .select('*')
-    .limit(DEFAULT_ALLOWED_EXERCISE_LIMIT * 2);
+    .limit(DEFAULT_ALLOWED_EXERCISE_LIMIT * 5);
 
   if (error) {
     throw new Error(`Failed to load exercise candidates: ${error.message || error}`);
@@ -400,7 +400,19 @@ async function fetchCandidateExercises(filters = {}) {
     return !categories.length && !equipment.length && !difficulty.length && !workoutType.length && !cardCategories.length;
   });
 
-  return relaxedExercises.slice(0, DEFAULT_ALLOWED_EXERCISE_LIMIT);
+  const finalCandidates = relaxedExercises.length
+    ? relaxedExercises
+    : normalizedExercises;
+
+  if (!finalCandidates.length) {
+    return [];
+  }
+
+  console.warn('⚠️ No exercises matched relaxed filters, defaulting to broad exercise candidate set', {
+    totalExercises: normalizedExercises.length,
+  });
+
+  return finalCandidates.slice(0, DEFAULT_ALLOWED_EXERCISE_LIMIT);
 }
 
 function buildAllowedExercisesPrompt(userMessage, allowedExercises, filters = {}, userBodyweightKg = null) {
@@ -792,11 +804,14 @@ function summarizeRoutine(routine) {
     const sets = Array.isArray(exercise.sets)
       ? exercise.sets.map((set) => `${Math.max(0, Math.floor(parseNumberValue(set.reps ?? 0)))} reps @ ${parseNumberValue(set.kg ?? set.weight ?? 0)} kg`).join(', ')
       : 'sets unavailable';
-    return `${name} (${sets})`;
+    return `- ${name}: ${sets}`;
   });
 
-  const titles = summaryExercises.length <= 4 ? summaryExercises.join('; ') : `${summaryExercises.slice(0, 4).join('; ')}; and ${summaryExercises.length - 4} more exercise(s)`;
-  return `The routine "${routine.title || 'Your Routine'}" includes ${routine.exercises.length} exercises: ${titles}.`;
+  const visibleExercises = summaryExercises.slice(0, 4);
+  const extraCount = summaryExercises.length - visibleExercises.length;
+  const extraText = extraCount > 0 ? `\n- ...and ${extraCount} more exercise(s)` : '';
+
+  return `Routine summary:\n${visibleExercises.join('\n')}${extraText}`;
 }
 
 function extractJsonString(text) {
@@ -1208,7 +1223,7 @@ User message:
   intentJson = intentJson.trim();
   const intentData = JSON.parse(intentJson);
   const intent = (intentData.intent || '').toString().trim().toUpperCase();
-  if (!['WORKOUT_GENERATION', 'FITNESS_CHAT'].includes(intent)) {
+  if (!['WORKOUT_GENERATION', 'ROUTINE_EDIT', 'FITNESS_CHAT'].includes(intent)) {
     throw new Error(`Invalid intent returned from classifier: ${intent}`);
   }
 
@@ -1276,7 +1291,7 @@ async function generateBotResponse(userMessage, userId, filters = {}) {
       const routineTitle = routine.title || existingRoutine.title || 'Updated Routine';
       const routineSummary = summarizeRoutine(routine);
       return {
-        message: `I've updated your routine "${routineTitle}" according to your request. ${routineSummary} Tell me if you'd like to make any further changes.`,
+        message: `I've updated your routine "${routineTitle}" according to your request.\n${routineSummary}\nIf you'd like another change, just ask me to swap an exercise or adjust the load.`,
         routine: routine,
         botRoutine: savedRoutine,
         routineSaved,
@@ -1303,7 +1318,7 @@ async function generateBotResponse(userMessage, userId, filters = {}) {
       const routineTitle = routine.title || routine.routine_name || 'New Routine';
       const routineSummary = summarizeRoutine(routine);
       return {
-        message: `I've created a personalized workout routine called "${routineTitle}". ${routineSummary} Tell me if you'd like to replace or adjust any exercise.`,
+        message: `I've created a personalized workout routine called "${routineTitle}".\n${routineSummary}\nIf you'd like to edit this routine, just ask me to replace an exercise or change the load.`,
         routine: routine
       };
     }
@@ -1359,6 +1374,21 @@ async function generateBotResponse(userMessage, userId, filters = {}) {
 
   } catch (error) {
     console.error('❌ Error generating bot response:', error);
+
+    if (error?.message?.includes('No exercise candidates available for routine generation')) {
+      return {
+        message: 'I could not find enough exercises that match your request. Please try again with more detail or a different combination of muscle groups and equipment, like "dumbbells only workout for chest and biceps."',
+        routine: null,
+      };
+    }
+
+    if (error?.message?.includes('No existing routine found to edit')) {
+      return {
+        message: 'I could not find an existing routine to edit. Please create a routine first, then ask me to modify it.',
+        routine: null,
+      };
+    }
+
     throw error;
   }
 }
