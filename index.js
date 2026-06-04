@@ -28,10 +28,59 @@ const supabase = createClient(
 const BOT_USER_ID = 'ai-bot-fitness-coach';
 const DEFAULT_ALLOWED_EXERCISE_LIMIT = 30;
 
+const MUSCLE_GROUP_TO_TARGETS = {
+  Back: ['upper back', 'lats', 'levator scapulae', 'serratus anterior', 'spine', 'back'],
+  Chest: ['pectorals', 'chest'],
+  Biceps: ['biceps'],
+  Triceps: ['triceps'],
+  Forearms: ['forearms'],
+  Shoulders: ['delts', 'shoulders'],
+  Trapezius: ['traps', 'trapezius'],
+  Quads: ['quads', 'adductors', 'quadriceps'],
+  Hamstrings: ['hamstrings'],
+  Glutes: ['glutes', 'gluteus'],
+  Calves: ['calves'],
+  Abdominals: ['abs', 'abdominals', 'core'],
+};
+
 function normalizeToArray(value) {
   if (!value) return [];
   if (Array.isArray(value)) return value.map((item) => item?.toString().trim()).filter(Boolean);
   return value.toString().split(',').map((item) => item.trim()).filter(Boolean);
+}
+
+function expandMuscleGroupFilters(muscleGroups) {
+  const expanded = [];
+  for (const group of muscleGroups) {
+    const normalizedGroup = group?.toString().trim();
+    if (!normalizedGroup) continue;
+    expanded.push(normalizedGroup);
+    const mappedKey = Object.keys(MUSCLE_GROUP_TO_TARGETS).find(
+      (key) => key.toLowerCase() === normalizedGroup.toLowerCase()
+    );
+    if (mappedKey) {
+      expanded.push(...MUSCLE_GROUP_TO_TARGETS[mappedKey]);
+    }
+  }
+  return [...new Set(expanded.map((value) => value.toString().toLowerCase()))];
+}
+
+function normalizeExerciseBodyPart(rawBodyPart, rawTarget, secondaryMuscles = []) {
+  const values = [rawBodyPart, rawTarget, ...(Array.isArray(secondaryMuscles) ? secondaryMuscles : [secondaryMuscles])]
+    .filter(Boolean)
+    .map((value) => value.toString().toLowerCase());
+
+  for (const [group, terms] of Object.entries(MUSCLE_GROUP_TO_TARGETS)) {
+    if (values.some((value) => value === group.toLowerCase())) {
+      return group;
+    }
+
+    if (values.some((value) => terms.some((term) => value.includes(term)))) {
+      return group;
+    }
+  }
+
+  return rawBodyPart || rawTarget || 'General';
 }
 
 function matchesFilterValue(cellValue, filterValues) {
@@ -125,6 +174,8 @@ function calculateDifficulty(exercises) {
 
 async function fetchAllowedExercises(filters = {}) {
   const { muscleGroups = [], equipment = [], difficulty = [], workoutType = [] } = filters;
+  const effectiveMuscleGroups = expandMuscleGroupFilters(muscleGroups);
+
   const { data: exercises, error } = await supabase
     .from('exercises')
     .select('*')
@@ -139,29 +190,36 @@ async function fetchAllowedExercises(filters = {}) {
   }
 
   return exercises
-    .map((exercise) => ({
-      id: Number(exercise.id),
-      name: (exercise.name || exercise.exercise || '').toString().trim(),
-      bodyPart: exercise.bodyPart || exercise.body_part || exercise.target || 'General',
-      target: exercise.target || '',
-      equipment: exercise.equipment || '',
-      difficulty: exercise.difficulty || '',
-      workoutType: exercise.workout_type || exercise.workoutType || exercise.type || '',
-      secondaryMuscles: Array.isArray(exercise.secondaryMuscles)
+    .map((exercise) => {
+      const secondaryMuscles = Array.isArray(exercise.secondaryMuscles)
         ? exercise.secondaryMuscles.map((m) => String(m))
         : exercise.secondaryMuscles != null
         ? [String(exercise.secondaryMuscles)]
-        : [],
-      gifUrl: exercise.gifUrl || '',
-      exercise_card_category: exercise.exercise_card_category || exercise.exerciseCardCategory || 'NORMAL',
-    }))
+        : [];
+
+      const rawBodyPart = exercise.bodyPart || exercise.body_part || exercise.target || 'General';
+      const rawTarget = exercise.target || '';
+
+      return {
+        id: Number(exercise.id),
+        name: (exercise.name || exercise.exercise || '').toString().trim(),
+        bodyPart: normalizeExerciseBodyPart(rawBodyPart, rawTarget, secondaryMuscles),
+        target: rawTarget,
+        equipment: exercise.equipment || '',
+        difficulty: exercise.difficulty || '',
+        workoutType: exercise.workout_type || exercise.workoutType || exercise.type || '',
+        secondaryMuscles,
+        gifUrl: exercise.gifUrl || '',
+        exercise_card_category: exercise.exercise_card_category || exercise.exerciseCardCategory || 'NORMAL',
+      };
+    })
     .filter((exercise) => exercise.id && exercise.name)
     .filter((exercise) => {
-      if (muscleGroups.length) {
+      if (effectiveMuscleGroups.length) {
         const muscleMatch = [exercise.bodyPart, exercise.target]
           .filter(Boolean)
-          .some((field) => matchesFilterValue(field, muscleGroups));
-        const secondaryMatch = exercise.secondaryMuscles.some((muscle) => matchesFilterValue(muscle, muscleGroups));
+          .some((field) => matchesFilterValue(field, effectiveMuscleGroups));
+        const secondaryMatch = exercise.secondaryMuscles.some((muscle) => matchesFilterValue(muscle, effectiveMuscleGroups));
         if (!muscleMatch && !secondaryMatch) return false;
       }
       if (equipment.length && !matchesFilterValue(exercise.equipment, equipment)) {
@@ -220,11 +278,27 @@ Important:
 - Only use the keys shown above.
 - Use only exercise_id, notes, and sets for each exercise.
 - Use only kg, reps, and rest for each set.
+- For bodyweight, assisted, and weighted-bodyweight exercises, do NOT include BW, BW +, BW -, or any display-formatted weight text in the JSON.
 - Do not include any other fields such as name, bodyPart, gifUrl, difficulty, rest_seconds, restSeconds, weight, or workout_type.
 - Do not use exercise-level reps or set counts.
 - Use 4-8 unique exercises.
 - Do not include markdown, comments, or extra text.
 `;
+}
+
+function parseNumberValue(raw) {
+  if (raw == null) return 0;
+  if (typeof raw === 'number' && !Number.isNaN(raw)) return raw;
+  const text = raw.toString().trim();
+  if (!text) return 0;
+  if (/bw/i.test(text)) {
+    throw new Error(`Invalid weight format containing BW: "${text}"`);
+  }
+  const normalized = text.replace(/,/g, '');
+  const match = normalized.match(/[-+]?[0-9]*\.?[0-9]+/);
+  if (!match) return 0;
+  const value = Number(match[0]);
+  return Number.isNaN(value) ? 0 : value;
 }
 
 function parseRoutineResponse(routineData, allowedExerciseMap) {
@@ -280,16 +354,21 @@ function parseRoutineResponse(routineData, allowedExerciseMap) {
         throw new Error(`Set at index ${setIndex} for exercise ${exerciseId} is invalid`);
       }
 
-      const allowedSetKeys = new Set(['kg', 'reps', 'rest']);
+      const allowedSetKeys = new Set(['kg', 'weight', 'reps', 'rest']);
       const unexpectedSetKeys = Object.keys(set).filter((key) => !allowedSetKeys.has(key));
       if (unexpectedSetKeys.length) {
         throw new Error(`Set ${setIndex} for exercise ${exerciseId} contains unexpected fields: ${unexpectedSetKeys.join(', ')}`);
       }
 
+      const rawKg = set.kg ?? set.weight ?? 0;
+      const kg = parseNumberValue(rawKg);
+      const reps = Math.max(0, Math.floor(parseNumberValue(set.reps ?? 0)));
+      const rest = Math.max(0, Math.floor(parseNumberValue(set.rest ?? 0)));
+
       return {
-        kg: Number(set.kg ?? 0) || 0,
-        reps: Number(set.reps ?? 0) || 0,
-        rest: Number(set.rest ?? 0) || 0,
+        kg,
+        reps,
+        rest,
       };
     });
 
