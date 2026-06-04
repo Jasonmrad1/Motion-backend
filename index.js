@@ -76,6 +76,16 @@ function normalizeWorkoutFilters(filters = {}) {
     const normalized = value.toString().trim().toLowerCase();
     if (normalized.includes('assisted')) cardCategories.add('BW_ASSISTED');
     if (normalized.includes('weighted')) cardCategories.add('BW_WEIGHTED');
+    if (normalized.includes('bodyweight')) {
+      cardCategories.add('BW');
+      cardCategories.add('BW_ASSISTED');
+      cardCategories.add('BW_WEIGHTED');
+    }
+    if (normalized.includes('calisthenics')) {
+      cardCategories.add('BW');
+      cardCategories.add('BW_ASSISTED');
+      cardCategories.add('BW_WEIGHTED');
+    }
     if (normalized.includes('timed')) cardCategories.add('BW_TIMED');
     if (normalized.includes('time')) cardCategories.add('TIMED');
   };
@@ -291,9 +301,17 @@ async function fetchCandidateExercises(filters = {}) {
 
   const matchesCardCategory = (cardCategoryValue) => {
     if (!cardCategories.length) return true;
-    return cardCategories.some(
-      (filter) => filter.toString().trim().toLowerCase() === cardCategoryValue.toString().trim().toLowerCase(),
-    );
+    const normalizedCard = cardCategoryValue?.toString().trim().toLowerCase();
+    return cardCategories.some((filter) => {
+      const normalizedFilter = filter.toString().trim().toLowerCase();
+      if (normalizedFilter === 'bw') {
+        return normalizedCard === 'bw' || normalizedCard.startsWith('bw_');
+      }
+      if (normalizedFilter === 'timed') {
+        return normalizedCard === 'timed' || normalizedCard === 'bw_timed';
+      }
+      return normalizedFilter === normalizedCard;
+    });
   };
 
   const filteredExercises = normalizedExercises.filter((exercise) => {
