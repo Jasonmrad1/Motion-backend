@@ -895,7 +895,7 @@ User message:
 "${userMessage}"
 `;
 
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${geminiApiKey}`, {
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${geminiApiKey}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
@@ -990,7 +990,7 @@ async function generateBotResponse(userMessage, userId, filters = {}) {
 
     const systemPrompt = 'You are Motion Coach, a professional fitness coach AI assistant. Help users with fitness advice, motivation, and general questions. Keep responses concise and friendly (2-3 sentences max). Stay focused on fitness/health topics.';
 
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${geminiApiKey}`, {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${geminiApiKey}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -1053,7 +1053,7 @@ async function generateAndSaveRoutine(userMessage, userId, filters = {}) {
     const userBodyweightKg = await fetchLatestUserBodyweight(userId);
     const prompt = buildAllowedExercisesPrompt(userMessage, candidateExercises, filters, userBodyweightKg);
 
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${geminiApiKey}`, {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${geminiApiKey}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -1089,7 +1089,7 @@ async function generateAndSaveRoutine(userMessage, userId, filters = {}) {
     } catch (parseError) {
       console.warn('⚠️ First routine parse failed, retrying once. Raw response:', routineJson, parseError.message);
 
-      const retryResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${geminiApiKey}`, {
+      const retryResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${geminiApiKey}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
