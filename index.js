@@ -3,6 +3,17 @@ const cors = require('cors');
 const admin = require('firebase-admin');
 const fetch = require("node-fetch"); // or use axios
 const { createClient } = require('@supabase/supabase-js');
+const { rankExercises } = require('./services/exerciseRankingService');
+const {
+  normalizeValue,
+  normalizeToArray,
+  normalizeArray,
+  normalizeMuscle,
+  inferMuscleGroupsFromText,
+  resolveMuscleGroupLabel,
+  MUSCLE_SYNONYM_GROUPS,
+  MUSCLE_CANONICAL_TO_GROUP_NAME,
+} = require('./services/muscleNormalizationService');
 require('dotenv').config();
 
 const app = express();
@@ -28,26 +39,16 @@ const supabase = createClient(
 const BOT_USER_ID = 'ai-bot-fitness-coach';
 const DEFAULT_ALLOWED_EXERCISE_LIMIT = 80;
 
-const MUSCLE_GROUP_TO_TARGETS = {
-  Back: ['upper back', 'lats', 'levator scapulae', 'serratus anterior', 'spine', 'back'],
-  Chest: ['pectorals', 'chest'],
-  Biceps: ['biceps'],
-  Triceps: ['triceps'],
-  Forearms: ['forearms'],
-  Shoulders: ['delts', 'shoulders'],
-  Trapezius: ['traps', 'trapezius'],
-  Quads: ['quads', 'adductors', 'quadriceps'],
-  Hamstrings: ['hamstrings'],
-  Glutes: ['glutes', 'gluteus'],
-  Calves: ['calves'],
-  Abdominals: ['abs', 'abdominals', 'core'],
-};
+const MUSCLE_GROUP_TO_TARGETS = Object.fromEntries(
+  Object.entries(MUSCLE_CANONICAL_TO_GROUP_NAME).map(([canonical, label]) => [
+    label,
+    MUSCLE_SYNONYM_GROUPS[canonical] || [],
+  ])
+);
 
-function normalizeToArray(value) {
-  if (!value) return [];
-  if (Array.isArray(value)) return value.map((item) => item?.toString().trim()).filter(Boolean);
-  return value.toString().split(',').map((item) => item.trim()).filter(Boolean);
-}
+// normalizeToArray, normalizeValue, normalizeArray, normalizeMuscle, inferMuscleGroupsFromText,
+// resolveMuscleGroupLabel, MUSCLE_SYNONYM_GROUPS, and MUSCLE_CANONICAL_TO_GROUP_NAME
+// are imported from services/muscleNormalizationService.js
 
 function normalizeWorkoutFilters(filters = {}) {
   const muscleGroups = normalizeToArray(filters.muscleGroups);
@@ -56,6 +57,11 @@ function normalizeWorkoutFilters(filters = {}) {
   const workoutType = normalizeToArray(filters.workoutType);
   const goal = filters.goal?.toString().trim() || '';
   const userMessage = filters.userMessage?.toString().trim().toLowerCase() || '';
+
+  inferMuscleGroupsFromText(userMessage).forEach((canonical) => {
+    const resolved = resolveMuscleGroupLabel(canonical);
+    if (resolved) muscleGroups.push(resolved);
+  });
 
   const categories = new Set();
   const cardCategories = new Set();
@@ -127,11 +133,11 @@ function normalizeWorkoutFilters(filters = {}) {
 function expandMuscleGroupFilters(muscleGroups) {
   const expanded = [];
   for (const group of muscleGroups) {
-    const normalizedGroup = group?.toString().trim();
-    if (!normalizedGroup) continue;
-    expanded.push(normalizedGroup);
+    const resolvedLabel = resolveMuscleGroupLabel(group);
+    if (!resolvedLabel) continue;
+    expanded.push(resolvedLabel);
     const mappedKey = Object.keys(MUSCLE_GROUP_TO_TARGETS).find(
-      (key) => key.toLowerCase() === normalizedGroup.toLowerCase()
+      (key) => key.toLowerCase() === resolvedLabel.toLowerCase()
     );
     if (mappedKey) {
       expanded.push(...MUSCLE_GROUP_TO_TARGETS[mappedKey]);
@@ -326,6 +332,30 @@ async function fetchCandidateExercises(filters = {}, userMessage = '') {
 
   const explicitRequestedExercises = findExplicitExerciseMatches(userMessage, normalizedExercises);
   const explicitExerciseIds = new Set(explicitRequestedExercises.map((exercise) => exercise.id));
+  const experienceLevel = (difficulty.find((value) => {
+    const normalized = value?.toString().trim().toLowerCase();
+    return ['beginner', 'intermediate', 'advanced'].includes(normalized);
+  }) || 'intermediate').toString().trim().toLowerCase();
+  const fitnessGoal = filters.goal?.toString().trim().toLowerCase() || '';
+  const availableEquipmentList = normalizeToArray(equipment).map((item) => item.toString().trim().toLowerCase());
+
+  const rankPool = (pool) => {
+    const { rankedExercises } = rankExercises({
+      exercises: pool,
+      targetMuscles: effectiveMuscleGroups,
+      availableEquipment: availableEquipmentList,
+      experienceLevel,
+      fitnessGoal,
+      userMessage,
+    });
+
+    const merged = [
+      ...explicitRequestedExercises,
+      ...rankedExercises.filter((exercise) => !explicitExerciseIds.has(exercise.id)),
+    ];
+
+    return [...new Map(merged.map((exercise) => [exercise.id, exercise])).values()];
+  };
 
   const matchesCardCategory = (cardCategoryValue) => {
     if (!cardCategories.length) return true;
@@ -378,9 +408,8 @@ async function fetchCandidateExercises(filters = {}, userMessage = '') {
   });
 
   if (filteredExercises.length) {
-    const explicitOnly = explicitRequestedExercises.filter((exercise) => !filteredExercises.some((item) => item.id === exercise.id));
-    const ordered = [...explicitRequestedExercises, ...filteredExercises.filter((exercise) => !explicitExerciseIds.has(exercise.id))];
-    return ordered.slice(0, DEFAULT_ALLOWED_EXERCISE_LIMIT);
+    const ranked = rankPool(filteredExercises);
+    return ranked.slice(0, DEFAULT_ALLOWED_EXERCISE_LIMIT);
   }
 
   console.warn('⚠️ No exercises matched strict filters, relaxing filter rules', {
@@ -434,17 +463,15 @@ async function fetchCandidateExercises(filters = {}, userMessage = '') {
     ? relaxedExercises
     : normalizedExercises;
 
-  const orderedFinalCandidates = [
-    ...explicitRequestedExercises,
-    ...finalCandidates.filter((exercise) => !explicitExerciseIds.has(exercise.id)),
-  ];
+  const ranked = rankPool(finalCandidates);
 
-  if (!orderedFinalCandidates.length) {
+  if (!ranked.length) {
     return [];
   }
 
-  return orderedFinalCandidates.slice(0, DEFAULT_ALLOWED_EXERCISE_LIMIT);
+  return ranked.slice(0, DEFAULT_ALLOWED_EXERCISE_LIMIT);
 }
+
 
 function buildAllowedExercisesPrompt(userMessage, allowedExercises, filters = {}, userBodyweightKg = null) {
   const exerciseList = allowedExercises
@@ -471,9 +498,9 @@ function buildAllowedExercisesPrompt(userMessage, allowedExercises, filters = {}
   return `Based on this request: "${userMessage}"
 ${preferenceText}${bodyweightNote}
 
-You are a professional fitness coach. From the exercise candidate list below, select the best exercises and build a workout routine like a real coach.
+Use ONLY the exercises provided below when generating the workout routine. Avoid selecting multiple exercises that are highly similar or belong to the same exercise family unless there is a strong programming reason.
 If the user specifically requests a named exercise, prefer that exercise from the allowed candidate list.
-Use only exercises from the candidate list. Do not invent, rename, substitute, or use any exercise that is not present.
+Do not invent, rename, substitute, or use any exercise that is not present.
 
 Design a balanced routine that fits the user's goal and constraints. Use 4-8 unique exercises. Choose the appropriate sets, reps, and notes for each exercise.
 Give the routine a meaningful title that reflects the user's request or the workout focus.
@@ -572,6 +599,7 @@ function buildAllowedExercisesEditPrompt(userMessage, currentRoutine, allowedExe
   return `Based on this request: "${userMessage}"
 ${preferenceText}${bodyweightNote}
 
+Use ONLY the exercises provided below when generating the workout routine. Avoid selecting multiple exercises that are highly similar or belong to the same exercise family unless there is a strong programming reason.
 You are a professional fitness coach. The user already has a saved routine. Use the current routine below and make only the changes requested by the user. Preserve the existing structure, balance, and the exercises that are not explicitly replaced.
 If the user specifically requests a named exercise, prefer that exercise from the allowed candidate list.
 If the user's request changes the routine focus or asks for a new routine title, update the title accordingly. Keep the existing title only when no rename or focus change is requested.
