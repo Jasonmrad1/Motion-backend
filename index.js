@@ -6,7 +6,6 @@ const { createClient } = require('@supabase/supabase-js');
 const { rankExercises } = require('./services/exerciseRankingService');
 const {
   normalizeValue,
-  normalizeToArray,
   normalizeArray,
   normalizeMuscle,
   inferMuscleGroupsFromText,
@@ -46,15 +45,15 @@ const MUSCLE_GROUP_TO_TARGETS = Object.fromEntries(
   ])
 );
 
-// normalizeToArray, normalizeValue, normalizeArray, normalizeMuscle, inferMuscleGroupsFromText,
+// normalizeArray, normalizeValue, normalizeMuscle, inferMuscleGroupsFromText,
 // resolveMuscleGroupLabel, MUSCLE_SYNONYM_GROUPS, and MUSCLE_CANONICAL_TO_GROUP_NAME
 // are imported from services/muscleNormalizationService.js
 
 function normalizeWorkoutFilters(filters = {}) {
-  const muscleGroups = normalizeToArray(filters.muscleGroups);
-  const equipment = normalizeToArray(filters.equipment);
-  const difficulty = normalizeToArray(filters.difficulty);
-  const workoutType = normalizeToArray(filters.workoutType);
+  const muscleGroups = normalizeArray(filters.muscleGroups);
+  const equipment = normalizeArray(filters.equipment);
+  const difficulty = normalizeArray(filters.difficulty);
+  const workoutType = normalizeArray(filters.workoutType);
   const goal = filters.goal?.toString().trim() || '';
   const userMessage = filters.userMessage?.toString().trim().toLowerCase() || '';
 
@@ -99,14 +98,14 @@ function normalizeWorkoutFilters(filters = {}) {
   equipment.forEach(addCategory);
   difficulty.forEach(addCategory);
   workoutType.forEach(addCategory);
-  normalizeToArray(goal).forEach(addCategory);
-  normalizeToArray(userMessage).forEach(addCategory);
+  normalizeArray(goal).forEach(addCategory);
+  normalizeArray(userMessage).forEach(addCategory);
 
   equipment.forEach(addCardCategory);
   difficulty.forEach(addCardCategory);
   workoutType.forEach(addCardCategory);
-  normalizeToArray(goal).forEach(addCardCategory);
-  normalizeToArray(userMessage).forEach(addCardCategory);
+  normalizeArray(goal).forEach(addCardCategory);
+  normalizeArray(userMessage).forEach(addCardCategory);
 
   if (difficulty.some((value) => value.toLowerCase().includes('assisted'))) {
     cardCategories.add('BW_ASSISTED');
@@ -337,7 +336,7 @@ async function fetchCandidateExercises(filters = {}, userMessage = '') {
     return ['beginner', 'intermediate', 'advanced'].includes(normalized);
   }) || 'intermediate').toString().trim().toLowerCase();
   const fitnessGoal = filters.goal?.toString().trim().toLowerCase() || '';
-  const availableEquipmentList = normalizeToArray(equipment).map((item) => item.toString().trim().toLowerCase());
+  const availableEquipmentList = normalizeArray(equipment).map((item) => item.toString().trim().toLowerCase());
 
   const rankPool = (pool) => {
     const { rankedExercises } = rankExercises({
@@ -1009,10 +1008,10 @@ app.post('/send-message', async (req, res) => {
     } = req.body;
 
     const filters = {
-      muscleGroups: normalizeToArray(muscleGroups),
-      equipment: normalizeToArray(equipment),
-      difficulty: normalizeToArray(difficulty),
-      workoutType: normalizeToArray(workoutType),
+      muscleGroups: normalizeArray(muscleGroups),
+      equipment: normalizeArray(equipment),
+      difficulty: normalizeArray(difficulty),
+      workoutType: normalizeArray(workoutType),
     };
 
     // Validate input
