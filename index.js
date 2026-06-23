@@ -1824,7 +1824,7 @@ app.post('/ai-recovery-insights', async (req, res) => {
       });
     }
 
-    const { workouts, muscleStates, fitnessLevel } = req.body;
+    const { workouts, muscleStates, fitnessLevel, weight, gender } = req.body;
     
     // Construct workout history text for Gemini context
     let workoutsContext = "No workouts logged yet.";
@@ -1868,10 +1868,12 @@ app.post('/ai-recovery-insights', async (req, res) => {
 - Green Zone (Fully Recovered, ready for intense training): ${green.length > 0 ? green.map(m => m.replace('_', ' ')).join(', ') : 'None'}`;
     }
 
-    const prompt = `As an elite AI Fitness Coach, analyze the user's recent workouts, fitness level, and muscle loading to provide a highly personalized recovery insight.
+    const prompt = `As an elite AI Fitness Coach, analyze the user's recent workouts, fitness level, weight, and muscle loading to provide a highly personalized, professional recovery insight.
 
 User Profile:
 - Fitness Level: ${fitnessLevel || 'Intermediate'}
+- Body Weight: ${weight ? weight + ' kg' : 'Unknown (assume 70 kg)'}
+- Gender: ${gender || 'Unknown'}
 
 How Fatigue Calculations Work (Important Context):
 - Note that fatigue accumulation and recovery rates are calculated based on the user's fitness level.
@@ -1885,12 +1887,12 @@ ${muscleStatesContext}
 Recent Workout History:
 ${workoutsContext}
 
-Please generate a professional, encouraging analysis structured in exactly three bullet points. Each bullet point MUST be a single, short, direct sentence of maximum 15 words:
+Please generate a professional, encouraging analysis structured in exactly three bullet points. Keep each bullet point to a single, concise, professional sentence of maximum 20 words:
 - Current Status: A quick summary of their fatigue state and active color zones (Red/Blue), calibrated for their ${fitnessLevel || 'Intermediate'} level.
-- Training Action Plan: A simple action plan of which muscles to avoid/rest and which to target today.
-- Nutrition & Tips: One key nutritional or lifestyle recovery tip tailored to their state.
+- Training Action Plan: A simple action plan of which muscles to avoid/rest and which to target today, tailored to their fitness level.
+- Nutrition & Tips: Targeted professional recovery advice. Calculate and state the exact protein target range in grams (using 1.6 to 2.2g per kg of body weight, based on their weight of ${weight ? weight + 'kg' : '70kg'}), daily hydration target in liters (e.g. 3-4L), and a lifestyle tip.
 
-Keep the response extremely brief (under 50 words total). Do not include markdown code blocks or json.`;
+Keep the response extremely brief (under 75 words total). Do not include markdown code blocks or json.`;
 
     const geminiApiKey = process.env.GEMINI_API_KEY;
     if (!geminiApiKey) {
