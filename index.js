@@ -1824,7 +1824,7 @@ app.post('/ai-recovery-insights', async (req, res) => {
       });
     }
 
-    const { workouts } = req.body;
+    const { workouts, muscleStates, fitnessLevel } = req.body;
     
     // Construct workout history text for Gemini context
     let workoutsContext = "No workouts logged yet.";
@@ -1840,17 +1840,57 @@ app.post('/ai-recovery-insights', async (req, res) => {
       }).slice(0, 5).join('\n');
     }
 
-    const prompt = `As an elite AI Fitness Coach, analyze the user's recent workouts and muscle loading to provide a highly personalized recovery insight.
+    // Construct muscle states context
+    let muscleStatesContext = "All muscles fully recovered.";
+    if (muscleStates && typeof muscleStates === 'object') {
+      const red = [];
+      const blue = [];
+      const green = [];
+      const allMuscles = [
+        'abs', 'obliques', 'forearms', 'biceps', 'shoulders', 'traps', 
+        'chest', 'quads', 'calves', 'hamstrings', 'lower_back', 'glutes', 
+        'lats', 'middle_back', 'triceps'
+      ];
+      
+      for (const [muscle, state] of Object.entries(muscleStates)) {
+        if (state === 2) red.push(muscle);
+        else if (state === 1) blue.push(muscle);
+      }
+      for (const m of allMuscles) {
+        if (!red.includes(m) && !blue.includes(m)) {
+          green.push(m);
+        }
+      }
+      
+      muscleStatesContext = `We display these muscles in the app with specific color-coding based on fatigue levels:
+- Red Zone (Fatigued, avoid direct loading): ${red.length > 0 ? red.map(m => m.replace('_', ' ')).join(', ') : 'None'}
+- Blue Zone (Mildly Fatigued, warm up carefully if training): ${blue.length > 0 ? blue.map(m => m.replace('_', ' ')).join(', ') : 'None'}
+- Green Zone (Fully Recovered, ready for intense training): ${green.length > 0 ? green.map(m => m.replace('_', ' ')).join(', ') : 'None'}`;
+    }
 
-Here is the user's recent workout history:
+    const prompt = `As an elite AI Fitness Coach, analyze the user's recent workouts, fitness level, and muscle loading to provide a highly personalized recovery insight.
+
+User Profile:
+- Fitness Level: ${fitnessLevel || 'Intermediate'}
+
+How Fatigue Calculations Work (Important Context):
+- Note that fatigue accumulation and recovery rates are calculated based on the user's fitness level.
+- Beginners (Rookie/Beginner) fatigue very quickly (accumulate higher fatigue points per set) and recover slowly (slower decay rate, lower fatigue threshold of 8.0 score to reach Red Zone).
+- Intermediate users have standard fatigue and recovery rates (fatigue threshold of 10.0 score to reach Red Zone).
+- Advanced (Architect) and Elite users can tolerate significantly higher set volumes and recover much faster (higher fatigue thresholds of 15.0 and 18.0 score to reach Red Zone, and faster points decay rate).
+
+Visual Heatmap Fatigue States (Color-Coded):
+${muscleStatesContext}
+
+Recent Workout History:
 ${workoutsContext}
 
-Please generate an analysis containing exactly:
-1. "Status Summary": A concise summary of their current muscle fatigue based on their target exercises, sets, and secondary muscle involvements.
-2. "Action Plan": Concrete training advice for their next session (which muscles to avoid/rest and which they can target today).
-3. "Nutrition & Tips": Targeted recovery tips (like protein suggestions, dynamic stretching, sleep, or hydration) tailored to their current fatigue level.
+Please generate a professional, encouraging analysis structured in exactly three bullet points. Each bullet point MUST be a single, short, direct sentence of maximum 15 words:
+- Current Status: A quick summary of their fatigue state and active color zones (Red/Blue), calibrated for their ${fitnessLevel || 'Intermediate'} level.
+- Training Action Plan: A simple action plan of which muscles to avoid/rest and which to target today.
+- Nutrition & Tips: One key nutritional or lifestyle recovery tip tailored to their state.
 
-Keep the response extremely concise, motivating, and professional (under 120 words total). Format the response as a single cohesive paragraph with clear line breaks. Do not include markdown code blocks or json.`;
+Keep the response extremely brief (under 50 words total). Do not include markdown code blocks or json.`;
 
     const geminiApiKey = process.env.GEMINI_API_KEY;
     if (!geminiApiKey) {
