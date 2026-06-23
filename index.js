@@ -1801,6 +1801,118 @@ app.post('/get-bot-conversation', async (req, res) => {
 });
 
 
+app.post('/ai-recovery-insights', async (req, res) => {
+  const startTime = Date.now();
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized',
+        message: 'Missing or invalid authorization token'
+      });
+    }
+
+    let decoded;
+    try {
+      decoded = await admin.auth().verifyIdToken(token);
+    } catch (tokenError) {
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid Token',
+        message: 'Failed to verify Firebase token: ' + tokenError.message
+      });
+    }
+
+    const { workouts } = req.body;
+    
+    // Construct workout history text for Gemini context
+    let workoutsContext = "No workouts logged yet.";
+    if (workouts && Array.isArray(workouts) && workouts.length > 0) {
+      workoutsContext = workouts.map(w => {
+        const title = w.title || "Unnamed Workout";
+        const date = w.ended_at || w.created_at || "Unknown Date";
+        const exercises = (w.exercises || []).map(ex => {
+          const setsCount = (ex.sets || []).length;
+          return `${ex.name || 'Exercise'} (${setsCount} sets targeting ${ex.bodyPart || 'unknown'} / ${JSON.stringify(ex.secondaryMuscles || [])})`;
+        }).join(', ');
+        return `- Workout: "${title}" on ${date}. Exercises: [${exercises}]`;
+      }).slice(0, 5).join('\n');
+    }
+
+    const prompt = `As an elite AI Fitness Coach, analyze the user's recent workouts and muscle loading to provide a highly personalized recovery insight.
+
+Here is the user's recent workout history:
+${workoutsContext}
+
+Please generate an analysis containing exactly:
+1. "Status Summary": A concise summary of their current muscle fatigue based on their target exercises, sets, and secondary muscle involvements.
+2. "Action Plan": Concrete training advice for their next session (which muscles to avoid/rest and which they can target today).
+3. "Nutrition & Tips": Targeted recovery tips (like protein suggestions, dynamic stretching, sleep, or hydration) tailored to their current fatigue level.
+
+Keep the response extremely concise, motivating, and professional (under 120 words total). Format the response as a single cohesive paragraph with clear line breaks. Do not include markdown code blocks or json.`;
+
+    const geminiApiKey = process.env.GEMINI_API_KEY;
+    if (!geminiApiKey) {
+      throw new Error('GEMINI_API_KEY not configured in environment');
+    }
+
+    const systemPrompt = "You are Motion AI Coach. Analyze workout data to provide direct, professional recovery recommendations. Be concise and friendly.";
+
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${geminiApiKey}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        system_instruction: {
+          parts: [{
+            text: systemPrompt
+          }]
+        },
+        contents: [{
+          parts: [{
+            text: prompt
+          }]
+        }],
+        generationConfig: {
+          maxOutputTokens: 350,
+          temperature: 0.7,
+        }
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(`Gemini API error: ${response.status} - ${JSON.stringify(errorData)}`);
+    }
+
+    const data = await response.json();
+    const botMessage = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+
+    if (!botMessage) {
+      throw new Error('Empty response from Gemini API');
+    }
+
+    const elapsed = Date.now() - startTime;
+    console.log(`✅ [AI_RECOVERY_INSIGHTS] Completed successfully in ${elapsed}ms`);
+
+    return res.status(200).json({
+      success: true,
+      insight: botMessage
+    });
+
+  } catch (error) {
+    console.error('❌ Error generating AI recovery insights:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Server Error',
+      message: error.message
+    });
+  }
+});
+
+
 // Test endpoint: List all conversations
 // Usage: GET /list-conversations
 app.get('/list-conversations', async (req, res) => {
