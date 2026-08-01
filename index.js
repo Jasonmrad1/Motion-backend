@@ -1101,8 +1101,8 @@ app.post('/send-message', async (req, res) => {
       console.log('🤖 Bot conversation detected, generating AI response...');
       
       try {
-        // Generate AI response using Gemini (pass userId for routine saving)
-        const botResponseData = await generateBotResponse(content, senderId, filters);
+        // Generate AI response using Gemini (pass userId and userContext for integrated bot response)
+        const botResponseData = await generateBotResponse(content, senderId, filters, req.body.userContext || {});
         
         let savedRoutine = null;
         let routineSaved = false;
@@ -1285,7 +1285,7 @@ User message:
 }
 
 // Generate AI bot response using Groq
-async function generateBotResponse(userMessage, userId, filters = {}) {
+async function generateBotResponse(userMessage, userId, filters = {}, userContext = {}) {
   try {
     const intentData = await classifyUserIntent(userMessage);
     console.log('🔎 Intent detection result:', intentData);
@@ -1368,13 +1368,32 @@ async function generateBotResponse(userMessage, userId, filters = {}) {
       };
     }
 
-    // Normal chat response
+    // Normal chat response with live telemetry context
     const geminiApiKey = process.env.GEMINI_API_KEY;
     if (!geminiApiKey) {
       throw new Error('GEMINI_API_KEY not configured in environment');
     }
 
-    const systemPrompt = 'You are Motion Coach, a professional fitness coach AI assistant. Help users with fitness advice, motivation, and general questions. Keep responses concise and friendly (2-3 sentences max). Stay focused on fitness/health topics.';
+    let telemetryBlock = '';
+    if (userContext && Object.keys(userContext).length > 0) {
+      telemetryBlock += '\n\n[USER LIVE APP TELEMETRY & FATIGUE CONTEXT]';
+      if (userContext.fatigueLevels && Object.keys(userContext.fatigueLevels).length > 0) {
+        telemetryBlock += `\n- Muscle Fatigue Status: ${JSON.stringify(userContext.fatigueLevels)}`;
+      }
+      if (userContext.exerciseRecords && Object.keys(userContext.exerciseRecords).length > 0) {
+        telemetryBlock += `\n- Past Exercise Maxes & Working Weight Recommendations: ${JSON.stringify(userContext.exerciseRecords)}`;
+      }
+      if (userContext.recentWorkouts && userContext.recentWorkouts.length > 0) {
+        telemetryBlock += `\n- Recent Workouts Logged: ${JSON.stringify(userContext.recentWorkouts)}`;
+      }
+    }
+
+    const systemPrompt = `You are Motion Coach, an integrated AI personal trainer embedded directly inside the user's Motion fitness app. 
+You have direct, real-time access to the user's actual workout logs, max lift records, and live muscle fatigue telemetry provided below.
+When answering, actively reference their specific muscle fatigue levels and past exercise records to give exact, tailored guidance (e.g. recommend working weights based on their maxes and warn against overloading fatigued muscles).
+Keep responses concise, warm, professional, and practical (2-4 sentences max).
+
+${telemetryBlock}`;
 
     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${geminiApiKey}`, {
       method: 'POST',

@@ -25,7 +25,7 @@ function normalizeArray(value) {
 const MUSCLE_SYNONYM_GROUPS = {
   abdominals: ['core', 'abs', 'abdominal', 'abdominals', 'midsection', 'waist', 'lower abs', 'upper abs', 'six pack'],
   back: ['back', 'lats', 'upper back', 'lat', 'wings', 'rear delts'],
-  chest: ['chest', 'pecs', 'pectorals'],
+  chest: ['chest', 'pecs', 'pectorals', 'pectoralis'],
   shoulders: ['shoulders', 'delts', 'deltoids'],
   biceps: ['biceps', 'arms'],
   triceps: ['triceps', 'arms'],
