@@ -1376,11 +1376,18 @@ async function generateBotResponse(userMessage, userId, filters = {}, userContex
 
     let telemetryBlock = '';
     if (userContext && Object.keys(userContext).length > 0) {
-      telemetryBlock += '\n\n[USER LIVE APP TELEMETRY & FATIGUE CONTEXT]';
-      if (userContext.fatigueLevels && Object.keys(userContext.fatigueLevels).length > 0) {
+      telemetryBlock += '\n\n[USER LIVE APP TELEMETRY & HISTORICAL KNOWLEDGE]';
+      if (userContext.lifetimeStats) {
+        telemetryBlock += `\n- Lifetime Stats: ${JSON.stringify(userContext.lifetimeStats)}`;
+      }
+      if (userContext.perMuscleGroupTelemetry) {
+        telemetryBlock += `\n- Detailed Muscle Telemetry (Fatigue & Lifetime Volume): ${JSON.stringify(userContext.perMuscleGroupTelemetry)}`;
+      } else if (userContext.fatigueLevels) {
         telemetryBlock += `\n- Muscle Fatigue Status: ${JSON.stringify(userContext.fatigueLevels)}`;
       }
-      if (userContext.exerciseRecords && Object.keys(userContext.exerciseRecords).length > 0) {
+      if (userContext.perExerciseMetrics) {
+        telemetryBlock += `\n- Detailed Exercise Metrics (Maxes, Working Weights, Frequencies, Last Performance): ${JSON.stringify(userContext.perExerciseMetrics)}`;
+      } else if (userContext.exerciseRecords) {
         telemetryBlock += `\n- Past Exercise Maxes & Working Weight Recommendations: ${JSON.stringify(userContext.exerciseRecords)}`;
       }
       if (userContext.recentWorkouts && userContext.recentWorkouts.length > 0) {
