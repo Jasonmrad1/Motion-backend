@@ -1913,12 +1913,15 @@ ${muscleStatesContext}
 Recent Workout History:
 ${workoutsContext}
 
-Please provide a comprehensive, highly personalized recovery & training analysis. You have FULL FREEDOM to generate as many relevant, specialized sections as needed based on the user's data (e.g. Current Fatigue & Readiness, Training Action Plan, Recommended Exercise Swaps, Overtraining Warnings, Active Recovery & Mobility, Nutrition & Hydration Strategy, Sleep Protocol, or Key Takeaways).
+Please generate a punchy, highly structured recovery report. Provide between 3 to 5 concise sections maximum.
 
-Format each section starting with a bold header title on a new line or bullet point:
-- **Section Title:** Detailed recommendation text
-
-Be detailed, concise, and highly actionable. Include exact calculated protein targets (1.6-2.2g/kg based on body weight of ${weight ? weight + 'kg' : '70kg'}) and hydration targets where applicable. Do not limit yourself to a fixed number of sections; include any sections that will help the user optimize their recovery and performance. Do not include markdown code blocks or json.`;
+Format rules (CRITICAL):
+- Format each section starting with a bold header title on a bullet point line:
+  - **Section Title:** Recommendation text
+- Generate between 3 to 5 sections maximum as relevant (e.g. Current Status & Readiness, Training Action Plan, Recommended Exercise Swaps, Overtraining Warning, Nutrition & Hydration).
+- Keep each section concise (1-2 sentences, max 25 words per section). Keep the language punchy, direct, and actionable.
+- Include exact calculated protein target (1.6-2.2g/kg based on body weight of ${weight ? weight + 'kg' : '70kg'}) and hydration target in liters where relevant.
+- Do NOT output long paragraphs, fluff, markdown code blocks, or JSON.`;
 
     const geminiApiKey = process.env.GEMINI_API_KEY;
     if (!geminiApiKey) {
