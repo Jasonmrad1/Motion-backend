@@ -1913,12 +1913,12 @@ ${muscleStatesContext}
 Recent Workout History:
 ${workoutsContext}
 
-Please generate a professional, encouraging analysis structured in exactly three bullet points. Keep each bullet point to a single, concise, professional sentence of maximum 20 words:
-- Current Status: A quick summary of their fatigue state and active color zones (Red/Blue), calibrated for their ${fitnessLevel || 'Intermediate'} level.
-- Training Action Plan: A simple action plan of which muscles to avoid/rest and which to target today, tailored to their fitness level.
-- Nutrition & Tips: Targeted professional recovery advice. Calculate and state the exact protein target range in grams (using 1.6 to 2.2g per kg of body weight, based on their weight of ${weight ? weight + 'kg' : '70kg'}), daily hydration target in liters (e.g. 3-4L), and a lifestyle tip.
+Please provide a comprehensive, highly personalized recovery & training analysis. You have FULL FREEDOM to generate as many relevant, specialized sections as needed based on the user's data (e.g. Current Fatigue & Readiness, Training Action Plan, Recommended Exercise Swaps, Overtraining Warnings, Active Recovery & Mobility, Nutrition & Hydration Strategy, Sleep Protocol, or Key Takeaways).
 
-Keep the response extremely brief (under 75 words total). Do not include markdown code blocks or json.`;
+Format each section starting with a bold header title on a new line or bullet point:
+- **Section Title:** Detailed recommendation text
+
+Be detailed, concise, and highly actionable. Include exact calculated protein targets (1.6-2.2g/kg based on body weight of ${weight ? weight + 'kg' : '70kg'}) and hydration targets where applicable. Do not limit yourself to a fixed number of sections; include any sections that will help the user optimize their recovery and performance. Do not include markdown code blocks or json.`;
 
     const geminiApiKey = process.env.GEMINI_API_KEY;
     if (!geminiApiKey) {
@@ -1944,7 +1944,7 @@ Keep the response extremely brief (under 75 words total). Do not include markdow
           }]
         }],
         generationConfig: {
-          maxOutputTokens: 350,
+          maxOutputTokens: 800,
           temperature: 0.7,
         }
       })
