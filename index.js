@@ -34,6 +34,27 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
+// Helper to verify auth token from either Supabase or Firebase
+async function verifyAuthToken(token) {
+  // 1. Try Supabase Auth JWT first
+  try {
+    const { data: { user }, error } = await supabase.auth.getUser(token);
+    if (user && !error) {
+      return { uid: user.id, email: user.email, provider: 'supabase' };
+    }
+  } catch (supabaseError) {
+    // Fall back to Firebase
+  }
+
+  // 2. Fall back to Firebase Admin SDK
+  try {
+    const decoded = await admin.auth().verifyIdToken(token);
+    return { uid: decoded.uid, email: decoded.email, provider: 'firebase' };
+  } catch (firebaseError) {
+    throw new Error('Authentication failed for both Supabase and Firebase: ' + firebaseError.message);
+  }
+}
+
 // Constants for AI bot
 const BOT_USER_ID = 'ai-bot-fitness-coach';
 const DEFAULT_ALLOWED_EXERCISE_LIMIT = 80;
@@ -987,12 +1008,12 @@ app.post('/send-message', async (req, res) => {
 
     let decoded;
     try {
-      decoded = await admin.auth().verifyIdToken(token);
+      decoded = await verifyAuthToken(token);
     } catch (tokenError) {
       return res.status(401).json({
         success: false,
         error: 'Invalid Token',
-        message: 'Failed to verify Firebase token: ' + tokenError.message
+        message: 'Failed to verify token: ' + tokenError.message
       });
     }
 
@@ -1713,14 +1734,14 @@ app.post('/get-bot-conversation', async (req, res) => {
 
     let decoded;
     try {
-      decoded = await admin.auth().verifyIdToken(token);
-      console.log('✅ [GET_BOT_CONVERSATION] Firebase verified for user:', decoded.uid);
+      decoded = await verifyAuthToken(token);
+      console.log('✅ [GET_BOT_CONVERSATION] Token verified for user:', decoded.uid);
     } catch (tokenError) {
-      console.error('❌ [GET_BOT_CONVERSATION] Firebase verification failed:', tokenError.message);
+      console.error('❌ [GET_BOT_CONVERSATION] Token verification failed:', tokenError.message);
       return res.status(401).json({
         success: false,
         error: 'Invalid Token',
-        message: 'Failed to verify Firebase token: ' + tokenError.message
+        message: 'Failed to verify token: ' + tokenError.message
       });
     }
 
@@ -1841,12 +1862,12 @@ app.post('/ai-recovery-insights', async (req, res) => {
 
     let decoded;
     try {
-      decoded = await admin.auth().verifyIdToken(token);
+      decoded = await verifyAuthToken(token);
     } catch (tokenError) {
       return res.status(401).json({
         success: false,
         error: 'Invalid Token',
-        message: 'Failed to verify Firebase token: ' + tokenError.message
+        message: 'Failed to verify token: ' + tokenError.message
       });
     }
 
