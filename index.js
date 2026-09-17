@@ -34,25 +34,13 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// Helper to verify auth token from either Supabase or Firebase
+// Helper to verify auth token using Supabase Auth
 async function verifyAuthToken(token) {
-  // 1. Try Supabase Auth JWT first
-  try {
-    const { data: { user }, error } = await supabase.auth.getUser(token);
-    if (user && !error) {
-      return { uid: user.id, email: user.email, provider: 'supabase' };
-    }
-  } catch (supabaseError) {
-    // Fall back to Firebase
+  const { data: { user }, error } = await supabase.auth.getUser(token);
+  if (error || !user) {
+    throw new Error('Supabase authentication failed: ' + (error ? error.message : 'User not found'));
   }
-
-  // 2. Fall back to Firebase Admin SDK
-  try {
-    const decoded = await admin.auth().verifyIdToken(token);
-    return { uid: decoded.uid, email: decoded.email, provider: 'firebase' };
-  } catch (firebaseError) {
-    throw new Error('Authentication failed for both Supabase and Firebase: ' + firebaseError.message);
-  }
+  return { uid: user.id, email: user.email, provider: 'supabase' };
 }
 
 // Constants for AI bot
@@ -1617,16 +1605,20 @@ async function sendNotificationToRecipient(conversation, senderId, senderRole, m
     // Determine recipient
     const recipientId = senderRole === 'user' ? conversation.coach_id : conversation.user_id;
     
-    // Get sender's name from Firebase
-    const senderRecord = await admin.auth().getUser(senderId);
-    const senderEmail = senderRecord.email || 'Unknown';
-    const senderName = senderRecord.displayName || senderEmail.split('@')[0];
-
-    // Get recipient's custom claims (FCM topics they're subscribed to)
-    const recipientRecord = await admin.auth().getUser(recipientId);
-    const recipientEmail = recipientRecord.email || 'Unknown';
-
-    console.log(`📱 Sending notification to ${recipientEmail} from ${senderName}`);
+    // Get sender's name from Supabase profiles
+    let senderName = 'Someone';
+    try {
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('full_name, email')
+        .eq('id', senderId)
+        .single();
+      if (profile) {
+        senderName = profile.full_name || profile.email?.split('@')[0] || 'Someone';
+      }
+    } catch (e) {
+      console.log('Could not fetch sender profile name:', e.message);
+    }
 
     // Send multicast notification using topic
     const recipientTopic = `user_${recipientId}`;
