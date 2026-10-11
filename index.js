@@ -1404,6 +1404,16 @@ async function generateBotResponse(userMessage, userId, filters = {}, userContex
     let telemetryBlock = '';
     if (userContext && Object.keys(userContext).length > 0) {
       telemetryBlock += '\n\n[USER LIVE APP TELEMETRY & HISTORICAL KNOWLEDGE]';
+      if (userContext.userProfile && typeof userContext.userProfile === 'object') {
+        const profile = {};
+        for (const field of ['name', 'fitnessLevel', 'gender']) {
+          const value = userContext.userProfile[field];
+          if (typeof value === 'string' && value.trim()) profile[field] = value.trim();
+        }
+        if (Object.keys(profile).length > 0) {
+          telemetryBlock += `\n- User Profile: ${JSON.stringify(profile)}`;
+        }
+      }
       if (userContext.lifetimeStats) {
         telemetryBlock += `\n- Lifetime Stats: ${JSON.stringify(userContext.lifetimeStats)}`;
       }
@@ -1425,6 +1435,7 @@ async function generateBotResponse(userMessage, userId, filters = {}, userContex
     const systemPrompt = `You are Motion Coach, an integrated AI personal trainer embedded directly inside the user's Motion fitness app. 
 You have direct, real-time access to the user's actual workout logs, max lift records, and live muscle fatigue telemetry provided below.
 When answering, actively reference their specific muscle fatigue levels and past exercise records to give exact, tailored guidance (e.g. recommend working weights based on their maxes and warn against overloading fatigued muscles).
+Use the supplied profile and fitness level to personalize advice. Treat missing profile fields as unknown.
 Keep responses concise, warm, professional, and practical (2-4 sentences max).
 
 ${telemetryBlock}`;
